@@ -1,3 +1,6 @@
 [submodule "third_party/konkers_kicad_lib"]
 	path = third_party/konkers_kicad_lib
 	url = https://github.com/konkers/konkers_kicad_lib
+[submodule "third_party/embassy-rs"]
+	path = third_party/embassy-rs
+	url = https://github.com/embassy-rs/embassy
