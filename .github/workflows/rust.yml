@@ -1,0 +1,64 @@
+on: [push, pull_request]
+
+name: Rust Continuous integration
+
+jobs:
+  test:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:  
+          submodules: true
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: "thumbv6m-none-eabi"
+          components: "clippy,rustfmt"
+      - name: check
+        working-directory: "firmware"
+        run: cargo check
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:  
+          submodules: true
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: "thumbv6m-none-eabi"
+          components: "clippy,rustfmt"
+      - 
+        working-directory: "firmware"
+        run: cargo build
+
+  fmt:
+    name: Fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:  
+          submodules: true
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: "thumbv6m-none-eabi"
+          components: "clippy,rustfmt"
+      - 
+        working-directory: "firmware"
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:  
+          submodules: true
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: "thumbv6m-none-eabi"
+          components: "clippy,rustfmt"
+      - 
+        working-directory: "firmware"
+        run: cargo clippy -- -D warnings

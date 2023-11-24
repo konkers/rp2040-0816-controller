@@ -1,0 +1,14 @@
+name: Check for CRLF
+
+on: [push, pull_request]
+
+jobs:
+  crlf:
+    name: Check For CRLF
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erclu/check-crlf@v1
+        with: 
+          path: ./firmware
