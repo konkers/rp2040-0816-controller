@@ -1,40 +1,23 @@
 use arrayvec::ArrayVec;
-use defmt::{info, panic};
+use defmt::info;
 use embassy_futures::select::{select, Either};
 use embassy_rp::usb::{Driver, Instance};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{self, Channel};
 use embassy_usb::class::cdc_acm::CdcAcmClass;
-use embassy_usb::driver::EndpointError;
 use embedded_io_async::Read;
 use gcode::buffers::Buffers;
 use gcode::{Comment, Nop, Parser, Word};
 use heapless::Vec;
 
-enum Error {
-    Disconnected,
-    InputBufferOverflow,
-    Io,
-}
-
-impl From<EndpointError> for Error {
-    fn from(val: EndpointError) -> Self {
-        match val {
-            EndpointError::BufferOverflow => panic!("Buffer overflow"),
-            EndpointError::Disabled => Error::Disconnected {},
-        }
-    }
-}
+use crate::{Error, Result};
 
 pub type GCodeCommand = gcode::GCode<ArrayVec<[Word; 10]>>;
-
 pub type GCodeCommandChannel<const N: usize> = Channel<NoopRawMutex, GCodeCommand, N>;
 pub type GCodeCommandReceiver<'a, const N: usize> =
     channel::Receiver<'a, NoopRawMutex, GCodeCommand, N>;
 pub type GCodeCommandSender<'a, const N: usize> =
     channel::Sender<'a, NoopRawMutex, GCodeCommand, N>;
-
-type Result<T> = core::result::Result<T, Error>;
 
 struct CharAssembler {
     buf: [u8; 4],
@@ -212,8 +195,8 @@ impl<'d, 'g, const GCODE_CHANNEL_LEN: usize, OutputReader: Read, T: Instance + '
 
     async fn handle_line(&mut self, line: &str) -> Result<()> {
         let parser: Parser<Nop, GCodeBuffers> = Parser::new(line, Nop);
-        for lines in parser {
-            for command in lines.gcodes() {
+        for line in parser {
+            for command in line.gcodes() {
                 // Block on having room in the command buffer.
                 self.command_sender.send(command.clone()).await;
             }
