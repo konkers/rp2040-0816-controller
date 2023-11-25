@@ -38,6 +38,7 @@ enum Error {
     NoIndex,
     InvalidIndex(usize),
     InvalidArgument(char),
+    FeederDisabled,
 }
 
 type Result<T> = core::result::Result<T, Error>;
@@ -69,6 +70,7 @@ impl Display for Error {
             Self::NoIndex => write!(f, "no index specified"),
             Self::InvalidIndex(index) => write!(f, "no feeder {}", index),
             Self::InvalidArgument(char) => write!(f, "invalid argument type {}", char),
+            Self::FeederDisabled => write!(f, "feeder disabled"),
         }
     }
 }
@@ -123,6 +125,8 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
                 command.minor_number(),
             ) {
                 (Mnemonic::General, 0, 0) => self.handle_g0(command).await,
+                (Mnemonic::Miscellaneous, 600, 0) => self.handle_m600(command).await,
+                (Mnemonic::Miscellaneous, 610, 0) => self.handle_m610(command).await,
                 (Mnemonic::Miscellaneous, 620, 0) => self.handle_m620(command).await,
                 (Mnemonic::Miscellaneous, 621, 0) => self.handle_m621(command).await,
                 (mnemonic, major, minor) => Err(Error::UnsupportedCommand(mnemonic, major, minor)),
@@ -134,7 +138,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
                 }
                 Err(e) => {
                     let mut s = String::<64>::new();
-                    writeln!(s, "{}", e).ok();
+                    writeln!(s, "error: {}", e).ok();
                     let _ = self.output.write_all(s.as_bytes()).await;
                 }
             }
@@ -166,6 +170,46 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         if let Some(angle) = angle {
             info!("setting F{} to A{}", index, angle);
             feeder.set_servo_angle(angle)?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_m600(&mut self, command: GCodeCommand) -> Result<()> {
+        let mut index = None;
+        let mut feed_length = None;
+        let mut override_error = false;
+
+        for arg in command.arguments() {
+            match arg.letter {
+                'I' => index = Some(arg.value as usize),
+                'F' => feed_length = Some(arg.value),
+                'X' => override_error = !(arg.value == 0.0),
+                letter => return Err(Error::InvalidArgument(letter)),
+            }
+        }
+
+        let (_, feeder) = self.resolve_feeder(index)?;
+
+        feeder.advance(feed_length, override_error).await?;
+
+        Ok(())
+    }
+
+    async fn handle_m610(&mut self, command: GCodeCommand) -> Result<()> {
+        let mut status = None;
+
+        for arg in command.arguments() {
+            match arg.letter {
+                'S' => status = Some(!(arg.value == 0.0)),
+                letter => return Err(Error::InvalidArgument(letter)),
+            }
+        }
+
+        if let Some(status) = status {
+            for feeder in self.feeders.iter_mut() {
+                feeder.enable(status);
+            }
         }
 
         Ok(())
