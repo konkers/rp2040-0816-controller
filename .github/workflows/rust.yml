@@ -1,4 +1,9 @@
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - main
+      - 'releases/**'
+  pull_request:
 
 name: Rust Continuous integration
 
