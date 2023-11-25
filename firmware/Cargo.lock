@@ -1191,6 +1191,7 @@ dependencies = [
  "embassy-time",
  "embassy-usb",
  "embedded-io-async",
+ "fixed",
  "gcode",
  "heapless",
  "panic-probe",
