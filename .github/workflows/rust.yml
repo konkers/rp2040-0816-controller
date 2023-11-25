@@ -24,7 +24,7 @@ jobs:
         run: cargo check
 
   build:
-    name: Build
+    name: Build and upload firmware
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,9 +34,21 @@ jobs:
         with:
           targets: "thumbv6m-none-eabi"
           components: "clippy,rustfmt"
+      - name: Install libudev
+        run: sudo apt-get install -y libudev-dev
       - 
         working-directory: "firmware"
-        run: cargo build
+        run: cargo install --locked --no-default-features elf2uf2-rs
+      -
+        working-directory: "firmware"
+        run: cargo build --release
+      -
+        working-directory: "firmware"
+        run: elf2uf2-rs target/thumbv6m-none-eabi/release/rp2040-0816 target/thumbv6m-none-eabi/release/rp2040-0816.uf2
+      - uses: actions/upload-artifact@v3
+        with:
+          name: rp2040-0816.uf2
+          path: firmware/target/thumbv6m-none-eabi/release/rp2040-0816.uf2
 
   fmt:
     name: Fmt
