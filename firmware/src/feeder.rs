@@ -1,6 +1,8 @@
+use embassy_time::Timer;
+
 use crate::{
     servo::{PwmLimits, Servo},
-    Result,
+    Error, Result,
 };
 
 #[derive(Clone)]
@@ -18,14 +20,15 @@ pub struct FeederConfig {
 pub struct Feeder<'a> {
     servo: &'a mut dyn Servo,
     config: FeederConfig,
+    enabled: bool,
 }
 
 impl<'a> Feeder<'a> {
-    const DEFAULT_ADVANCED_ANGLE: f32 = 130.0;
+    const DEFAULT_ADVANCED_ANGLE: f32 = 135.0;
     const DEFAULT_HALF_ADVANCED_ANGLE: f32 = 107.5;
-    const DEFAULT_RETRACT_ANGLE: f32 = 85.0;
+    const DEFAULT_RETRACT_ANGLE: f32 = 80.0;
     const DEFAULT_FEED_LENGTH: f32 = 2.0;
-    const DEFAULT_SETTLE_TIME: u32 = 500; // ms
+    const DEFAULT_SETTLE_TIME: u32 = 300; // ms
     const DEFAULT_IGNORE_FEEDBACK_PIN: bool = false;
 
     pub fn new(servo: &'a mut dyn Servo) -> Self {
@@ -41,7 +44,11 @@ impl<'a> Feeder<'a> {
             ignore_feeback_pin: Self::DEFAULT_IGNORE_FEEDBACK_PIN,
         };
 
-        Self { servo, config }
+        Self {
+            servo,
+            config,
+            enabled: false,
+        }
     }
 
     pub fn set_config(&mut self, config: FeederConfig) -> Result<()> {
@@ -58,6 +65,26 @@ impl<'a> Feeder<'a> {
     }
 
     pub fn set_servo_angle(&mut self, angle: f32) -> Result<()> {
-        self.servo.set_angle(angle)
+        if self.enabled {
+            self.servo.set_angle(angle)
+        } else {
+            Err(Error::FeederDisabled)
+        }
+    }
+
+    async fn settle(&self) {
+        Timer::after_micros(self.config.settle_time as u64 * 1000).await;
+    }
+
+    pub async fn advance(&mut self, _length: Option<f32>, _override_error: bool) -> Result<()> {
+        self.set_servo_angle(self.config.advanced_angle)?;
+        self.settle().await;
+        self.set_servo_angle(self.config.retract_angle)?;
+        self.settle().await;
+        Ok(())
+    }
+
+    pub fn enable(&mut self, enabled: bool) {
+        self.enabled = enabled
     }
 }
