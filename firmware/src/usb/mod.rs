@@ -11,7 +11,9 @@ use heapless::{String, Vec};
 mod gcode_interface;
 mod picotool;
 
-pub use gcode_interface::{GCodeCommandChannel, GCodeCommandReceiver, GCodeCommandSender};
+pub use gcode_interface::{
+    GCodeCommand, GCodeCommandChannel, GCodeCommandReceiver, GCodeCommandSender,
+};
 
 pub struct Usb<'a, const GCODE_CHANNEL_LEN: usize, OutputReader: Read> {
     gcode_output_reader: OutputReader,
