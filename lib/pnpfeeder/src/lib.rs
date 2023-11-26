@@ -138,7 +138,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         let mut angle = None;
         for arg in command.arguments() {
             match arg.letter {
-                'I' => index = Some(arg.value.cast()),
+                'N' => index = Some(arg.value.cast()),
                 'A' => angle = Some(arg.value.cast()),
                 _ => return Err(Error::InvalidArgument(arg.letter)),
             }
@@ -159,7 +159,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
 
         for arg in command.arguments() {
             match arg.letter {
-                'I' => index = Some(arg.value.cast()),
+                'N' => index = Some(arg.value.cast()),
                 'F' => feed_length = Some(arg.value.cast()),
                 'X' => override_error = arg.value != 0,
                 letter => return Err(Error::InvalidArgument(letter)),
@@ -205,7 +205,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
 
         for arg in command.arguments() {
             match arg.letter {
-                'I' => index = Some(arg.value.cast()),
+                'N' => index = Some(arg.value.cast()),
                 'A' => advanced_angle = Some(arg.value.cast()),
                 'B' => half_advanced_angle = Some(arg.value.cast()),
                 'C' => retract_angle = Some(arg.value.cast()),
@@ -247,7 +247,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         let mut index = None;
         for arg in command.arguments() {
             match arg.letter {
-                'I' => index = Some(arg.value.cast()),
+                'N' => index = Some(arg.value.cast()),
                 letter => return Err(Error::InvalidArgument(letter)),
             }
         }
@@ -258,7 +258,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         let mut s: String<64> = String::new();
         writeln!(
             s,
-            "M620 I{} A{} B{} C{} F{} U{} V{} W{} X{}",
+            "M620 N{} A{} B{} C{} F{} U{} V{} W{} X{}",
             index,
             config.advanced_angle,
             config.half_advanced_angle,
@@ -357,7 +357,7 @@ mod tests {
         let test_harness_future = run_test_harness(gcode_channel.receiver());
         let line_sender = gcode_channel.sender();
         let test_future = async move {
-            line_sender.send("G0 I1 A120.0".parse().unwrap()).await;
+            line_sender.send("G0 N1 A120.0".parse().unwrap()).await;
             line_sender.send("M999".parse().unwrap()).await;
         };
         let ((servos, output), _) = join(test_harness_future, test_future).await;
@@ -373,7 +373,7 @@ mod tests {
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender.send("M610 S1".parse().unwrap()).await;
-            line_sender.send("G0 I1 A120.0".parse().unwrap()).await;
+            line_sender.send("G0 N1 A120.0".parse().unwrap()).await;
             line_sender.send("M999".parse().unwrap()).await;
         };
         let ((servos, output), _) = join(test_harness_future, test_future).await;
@@ -389,7 +389,7 @@ mod tests {
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender.send("M610 S1".parse().unwrap()).await;
-            line_sender.send("M600 I1".parse().unwrap()).await;
+            line_sender.send("M600 N1".parse().unwrap()).await;
             line_sender.send("M999".parse().unwrap()).await;
         };
         let ((servos, output), _) = join(test_harness_future, test_future).await;
@@ -415,8 +415,8 @@ mod tests {
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender.send("M610 S1".parse().unwrap()).await;
-            line_sender.send("M620 I1 A122 C22".parse().unwrap()).await;
-            line_sender.send("M600 I1".parse().unwrap()).await;
+            line_sender.send("M620 N1 A122 C22".parse().unwrap()).await;
+            line_sender.send("M600 N1".parse().unwrap()).await;
             line_sender.send("M999".parse().unwrap()).await;
         };
         let ((servos, output), _) = join(test_harness_future, test_future).await;
@@ -436,14 +436,14 @@ mod tests {
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender
-                .send("M620 I1 A1 B2 C3 F4 U5 V6 W7 X1".parse().unwrap())
+                .send("M620 N1 A1 B2 C3 F4 U5 V6 W7 X1".parse().unwrap())
                 .await;
-            line_sender.send("M621 I1".parse().unwrap()).await;
+            line_sender.send("M621 N1".parse().unwrap()).await;
             line_sender.send("M999".parse().unwrap()).await;
         };
         let ((_servos, output), _) = join(test_harness_future, test_future).await;
 
         let output = String::from_utf8_lossy(&output);
-        assert_eq!(output, "ok\nM620 I1 A1 B2 C3 F4 U5 V6 W7 X1\nok\n");
+        assert_eq!(output, "ok\nM620 N1 A1 B2 C3 F4 U5 V6 W7 X1\nok\n");
     }
 }
