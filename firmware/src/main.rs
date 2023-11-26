@@ -5,6 +5,7 @@
 // This is used for `utf8_char_width`.
 #![feature(str_internals)]
 
+use az::Cast;
 use core::fmt::{Display, Write as _};
 use defmt::info;
 use embassy_executor::Spawner;
@@ -15,7 +16,6 @@ use embassy_rp::usb::InterruptHandler;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, pipe::Pipe};
 use embassy_usb::driver::EndpointError;
 use embedded_io_async::Write;
-use gcode::Mnemonic;
 use heapless::String;
 use rp2040_flash::flash;
 use {defmt_rtt as _, panic_probe as _};
@@ -26,7 +26,7 @@ mod usb;
 
 use feeder::Feeder;
 use servo::PwmServo;
-use usb::{GCodeCommand, GCodeCommandChannel, GCodeCommandReceiver};
+use usb::{GCodeLineChannel, GCodeLineReceiver, Line, Value, Word};
 
 enum Error {
     Disconnected,
@@ -34,7 +34,7 @@ enum Error {
     Io,
     AngleOutOfRange,
     PwmValueOutOfRange,
-    UnsupportedCommand(Mnemonic, u32, u32),
+    UnsupportedCommand(Word),
     NoIndex,
     InvalidIndex(usize),
     InvalidArgument(char),
@@ -60,13 +60,7 @@ impl Display for Error {
             Self::Io => write!(f, "IO error"),
             Self::AngleOutOfRange => write!(f, "angle out of range"),
             Self::PwmValueOutOfRange => write!(f, "pwm value out of range"),
-            Self::UnsupportedCommand(mnemonic, major, minor) => {
-                if *minor != 0 {
-                    write!(f, "unsupported command {}{}.{}", mnemonic, major, minor)
-                } else {
-                    write!(f, "unsupported command {}{}", mnemonic, major)
-                }
-            }
+            Self::UnsupportedCommand(word) => write!(f, "unsupported command {word}"),
             Self::NoIndex => write!(f, "no index specified"),
             Self::InvalidIndex(index) => write!(f, "no feeder {}", index),
             Self::InvalidArgument(char) => write!(f, "invalid argument type {}", char),
@@ -94,7 +88,7 @@ async fn main(_spawner: Spawner) {
     let mut cdc_output_pipe = Pipe::<NoopRawMutex, 256>::new();
     let (gcode_output_reader, gcode_output_writer) = cdc_output_pipe.split();
 
-    let gcode_command_channel = GCodeCommandChannel::<2>::new();
+    let gcode_command_channel = GCodeLineChannel::<2>::new();
 
     let usb = usb::Usb::new(gcode_output_reader, gcode_command_channel.sender());
     let usb_future = usb.run(p.USB, Irqs, &unique_id);
@@ -110,26 +104,37 @@ struct GCodeHandler<'a, 'b: 'a, W: Write> {
     output: W,
 }
 
+macro_rules! word {
+    ($letter:literal, $value:literal) => {
+        Word::lit($letter, Value::lit(stringify!($value)))
+    };
+}
+
 impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
     pub fn new(feeders: &'a mut [Feeder<'b>], output: W) -> Self {
         Self { feeders, output }
     }
 
-    pub async fn run(&mut self, receiver: GCodeCommandReceiver<'_, 2>) {
+    pub async fn run(&mut self, receiver: GCodeLineReceiver<'_, 2>) {
         loop {
-            let command = receiver.receive().await;
+            let line = receiver.receive().await;
 
-            let ret = match (
-                command.mnemonic(),
-                command.major_number(),
-                command.minor_number(),
-            ) {
-                (Mnemonic::General, 0, 0) => self.handle_g0(command).await,
-                (Mnemonic::Miscellaneous, 600, 0) => self.handle_m600(command).await,
-                (Mnemonic::Miscellaneous, 610, 0) => self.handle_m610(command).await,
-                (Mnemonic::Miscellaneous, 620, 0) => self.handle_m620(command).await,
-                (Mnemonic::Miscellaneous, 621, 0) => self.handle_m621(command).await,
-                (mnemonic, major, minor) => Err(Error::UnsupportedCommand(mnemonic, major, minor)),
+            let Some(command) = line.command() else {
+                continue;
+            };
+
+            let ret = if *command == word!('G', 0) {
+                self.handle_g0(line).await
+            } else if *command == word!('M', 600) {
+                self.handle_m600(line).await
+            } else if *command == word!('M', 610) {
+                self.handle_m610(line).await
+            } else if *command == word!('M', 620) {
+                self.handle_m620(line).await
+            } else if *command == word!('M', 621) {
+                self.handle_m621(line).await
+            } else {
+                Err(Error::UnsupportedCommand(command.clone()))
             };
 
             match ret {
@@ -155,13 +160,13 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         Ok((index, &mut self.feeders[index]))
     }
 
-    async fn handle_g0(&mut self, command: GCodeCommand) -> Result<()> {
+    async fn handle_g0(&mut self, command: Line) -> Result<()> {
         let mut index = None;
         let mut angle = None;
         for arg in command.arguments() {
             match arg.letter {
-                'I' => index = Some(arg.value as usize),
-                'A' => angle = Some(arg.value),
+                'I' => index = Some(arg.value.cast()),
+                'A' => angle = Some(arg.value.cast()),
                 _ => return Err(Error::InvalidArgument(arg.letter)),
             }
         }
@@ -175,16 +180,16 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         Ok(())
     }
 
-    async fn handle_m600(&mut self, command: GCodeCommand) -> Result<()> {
+    async fn handle_m600(&mut self, command: Line) -> Result<()> {
         let mut index = None;
         let mut feed_length = None;
         let mut override_error = false;
 
         for arg in command.arguments() {
             match arg.letter {
-                'I' => index = Some(arg.value as usize),
-                'F' => feed_length = Some(arg.value),
-                'X' => override_error = !(arg.value == 0.0),
+                'I' => index = Some(arg.value.cast()),
+                'F' => feed_length = Some(arg.value.cast()),
+                'X' => override_error = arg.value != 0,
                 letter => return Err(Error::InvalidArgument(letter)),
             }
         }
@@ -196,12 +201,12 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         Ok(())
     }
 
-    async fn handle_m610(&mut self, command: GCodeCommand) -> Result<()> {
+    async fn handle_m610(&mut self, command: Line) -> Result<()> {
         let mut status = None;
 
         for arg in command.arguments() {
             match arg.letter {
-                'S' => status = Some(!(arg.value == 0.0)),
+                'S' => status = Some(arg.value != 0.0),
                 letter => return Err(Error::InvalidArgument(letter)),
             }
         }
@@ -215,7 +220,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         Ok(())
     }
 
-    async fn handle_m620(&mut self, command: GCodeCommand) -> Result<()> {
+    async fn handle_m620(&mut self, command: Line) -> Result<()> {
         let mut index = None;
         let mut advanced_angle = None;
         let mut half_advanced_angle = None;
@@ -228,15 +233,15 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
 
         for arg in command.arguments() {
             match arg.letter {
-                'I' => index = Some(arg.value as usize),
-                'A' => advanced_angle = Some(arg.value),
-                'B' => half_advanced_angle = Some(arg.value),
-                'C' => retract_angle = Some(arg.value),
-                'F' => feed_length = Some(arg.value),
-                'U' => settle_time = Some(arg.value as u32),
-                'V' => pwm_0 = Some(arg.value as u16),
-                'W' => pwm_180 = Some(arg.value as u16),
-                'X' => ignore_feeback_pin = Some(!(arg.value == 0.0)),
+                'I' => index = Some(arg.value.cast()),
+                'A' => advanced_angle = Some(arg.value.cast()),
+                'B' => half_advanced_angle = Some(arg.value.cast()),
+                'C' => retract_angle = Some(arg.value.cast()),
+                'F' => feed_length = Some(arg.value.cast()),
+                'U' => settle_time = Some(arg.value.cast()),
+                'V' => pwm_0 = Some(arg.value.cast()),
+                'W' => pwm_180 = Some(arg.value.cast()),
+                'X' => ignore_feeback_pin = Some(arg.value != 0),
                 letter => return Err(Error::InvalidArgument(letter)),
             }
         }
@@ -266,11 +271,11 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         Ok(())
     }
 
-    async fn handle_m621(&mut self, command: GCodeCommand) -> Result<()> {
+    async fn handle_m621(&mut self, command: Line) -> Result<()> {
         let mut index = None;
         for arg in command.arguments() {
             match arg.letter {
-                'I' => index = Some(arg.value as usize),
+                'I' => index = Some(arg.value.cast()),
                 letter => return Err(Error::InvalidArgument(letter)),
             }
         }

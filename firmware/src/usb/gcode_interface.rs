@@ -1,4 +1,3 @@
-use arrayvec::ArrayVec;
 use defmt::info;
 use embassy_futures::select::{select, Either};
 use embassy_rp::usb::{Driver, Instance};
@@ -6,18 +5,25 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{self, Channel};
 use embassy_usb::class::cdc_acm::CdcAcmClass;
 use embedded_io_async::Read;
-use gcode::buffers::Buffers;
-use gcode::{Comment, Nop, Parser, Word};
+use fixed::types::extra::U16;
+use fixed::FixedI32;
+use fixed_gcode::BufferTypes;
 use heapless::Vec;
 
 use crate::{Error, Result};
 
-pub type GCodeCommand = gcode::GCode<ArrayVec<[Word; 10]>>;
-pub type GCodeCommandChannel<const N: usize> = Channel<NoopRawMutex, GCodeCommand, N>;
-pub type GCodeCommandReceiver<'a, const N: usize> =
-    channel::Receiver<'a, NoopRawMutex, GCodeCommand, N>;
-pub type GCodeCommandSender<'a, const N: usize> =
-    channel::Sender<'a, NoopRawMutex, GCodeCommand, N>;
+pub type Value = FixedI32<U16>;
+
+pub struct Types;
+impl BufferTypes<Value> for Types {
+    type Words = Vec<Word, 5>;
+}
+
+pub type Word = fixed_gcode::Word<Value>;
+pub type Line = fixed_gcode::Line<Value, Types>;
+pub type GCodeLineChannel<const N: usize> = Channel<NoopRawMutex, Line, N>;
+pub type GCodeLineReceiver<'a, const N: usize> = channel::Receiver<'a, NoopRawMutex, Line, N>;
+pub type GCodeLineSender<'a, const N: usize> = channel::Sender<'a, NoopRawMutex, Line, N>;
 
 struct CharAssembler {
     buf: [u8; 4],
@@ -116,13 +122,6 @@ impl<const N: usize> LineReader<N> {
     }
 }
 
-struct GCodeBuffers;
-impl<'input> Buffers<'input> for GCodeBuffers {
-    type Arguments = ArrayVec<[Word; 10]>;
-    type Commands = ArrayVec<[gcode::GCode<Self::Arguments>; 2]>;
-    type Comments = ArrayVec<[Comment<'input>; 1]>;
-}
-
 pub struct GCodeInterface<
     'd,
     'g,
@@ -132,7 +131,7 @@ pub struct GCodeInterface<
 > {
     class: CdcAcmClass<'d, Driver<'d, T>>,
     output_reader: OutputReader,
-    command_sender: GCodeCommandSender<'g, GCODE_CHANNEL_LEN>,
+    command_sender: GCodeLineSender<'g, GCODE_CHANNEL_LEN>,
 }
 
 impl<'d, 'g, const GCODE_CHANNEL_LEN: usize, OutputReader: Read, T: Instance + 'd>
@@ -141,7 +140,7 @@ impl<'d, 'g, const GCODE_CHANNEL_LEN: usize, OutputReader: Read, T: Instance + '
     pub fn new(
         class: CdcAcmClass<'d, Driver<'d, T>>,
         output_reader: OutputReader,
-        command_sender: GCodeCommandSender<'g, GCODE_CHANNEL_LEN>,
+        command_sender: GCodeLineSender<'g, GCODE_CHANNEL_LEN>,
     ) -> Self {
         Self {
             class,
@@ -194,12 +193,9 @@ impl<'d, 'g, const GCODE_CHANNEL_LEN: usize, OutputReader: Read, T: Instance + '
     }
 
     async fn handle_line(&mut self, line: &str) -> Result<()> {
-        let parser: Parser<Nop, GCodeBuffers> = Parser::new(line, Nop);
-        for line in parser {
-            for command in line.gcodes() {
-                // Block on having room in the command buffer.
-                self.command_sender.send(command.clone()).await;
-            }
+        match line.parse::<Line>() {
+            Ok(command) => self.command_sender.send(command).await,
+            Err(_e) => self.class.write_packet(b"error parsing gcode").await?,
         }
         Ok(())
     }

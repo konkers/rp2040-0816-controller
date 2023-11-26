@@ -12,12 +12,12 @@ mod gcode_interface;
 mod picotool;
 
 pub use gcode_interface::{
-    GCodeCommand, GCodeCommandChannel, GCodeCommandReceiver, GCodeCommandSender,
+    GCodeLineChannel, GCodeLineReceiver, GCodeLineSender, Line, Value, Word,
 };
 
 pub struct Usb<'a, const GCODE_CHANNEL_LEN: usize, OutputReader: Read> {
     gcode_output_reader: OutputReader,
-    gcode_command_sender: GCodeCommandSender<'a, GCODE_CHANNEL_LEN>,
+    gcode_command_sender: GCodeLineSender<'a, GCODE_CHANNEL_LEN>,
 }
 
 impl<'a, const GCODE_CHANNEL_LEN: usize, OutputReader: Read>
@@ -25,7 +25,7 @@ impl<'a, const GCODE_CHANNEL_LEN: usize, OutputReader: Read>
 {
     pub fn new(
         cdc_output_reader: OutputReader,
-        gcode_command_sender: GCodeCommandSender<'a, GCODE_CHANNEL_LEN>,
+        gcode_command_sender: GCodeLineSender<'a, GCODE_CHANNEL_LEN>,
     ) -> Self {
         Self {
             gcode_output_reader: cdc_output_reader,

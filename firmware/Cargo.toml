@@ -12,8 +12,7 @@ bench = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# Outdate arrayvec needed for gcode crate.
-arrayvec = { version = "0.5", default-features = false }
+az = { version = "1.2.1", default-features = false }
 base64 = { version = "0.21.5", default-features = false }
 cortex-m = { version = "0.7.6", features = ["inline-asm"] }
 cortex-m-rt = "0.7.0"
@@ -51,7 +50,7 @@ embassy-usb = { version = "0.1.0", path = "../third_party/embassy-rs/embassy-usb
 ] }
 embedded-io-async = { version = "0.6.0", features = ["defmt-03"] }
 fixed = "1.23.1"
-gcode = { version = "0.6.1", default-features = false }
+fixed_gcode = { version = "0.1.0", path = "../third_party/fixed_gcode", default-features = false }
 heapless = "0.8.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 rp2040-flash = "0.4.0"
