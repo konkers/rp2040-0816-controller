@@ -49,11 +49,13 @@ embassy-usb = { version = "0.1.0", path = "../third_party/embassy-rs/embassy-usb
 	"defmt",
 ] }
 embedded-io-async = { version = "0.6.0", features = ["defmt-03"] }
-fixed = "1.23.1"
+fixed = "1.24"
 fixed_gcode = { version = "0.1.0", path = "../third_party/fixed_gcode", default-features = false }
 heapless = "0.8.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 rp2040-flash = "0.4.0"
 
 [profile.release]
+lto = "thin"
+opt-level = "z"
 debug = 2

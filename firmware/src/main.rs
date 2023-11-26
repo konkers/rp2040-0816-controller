@@ -7,7 +7,6 @@
 
 use az::Cast;
 use core::fmt::{Display, Write as _};
-use defmt::info;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_rp::bind_interrupts;
@@ -16,6 +15,8 @@ use embassy_rp::usb::InterruptHandler;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, pipe::Pipe};
 use embassy_usb::driver::EndpointError;
 use embedded_io_async::Write;
+use fixed::types::extra::U16;
+use fixed::FixedI32;
 use heapless::String;
 use rp2040_flash::flash;
 use {defmt_rtt as _, panic_probe as _};
@@ -26,7 +27,9 @@ mod usb;
 
 use feeder::Feeder;
 use servo::PwmServo;
-use usb::{GCodeLineChannel, GCodeLineReceiver, Line, Value, Word};
+use usb::{GCodeLineChannel, GCodeLineReceiver, Line, Word};
+
+pub type Value = FixedI32<U16>;
 
 enum Error {
     Disconnected,
@@ -106,7 +109,7 @@ struct GCodeHandler<'a, 'b: 'a, W: Write> {
 
 macro_rules! word {
     ($letter:literal, $value:literal) => {
-        Word::lit($letter, Value::lit(stringify!($value)))
+        Word::new($letter, $value)
     };
 }
 
@@ -171,9 +174,8 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
             }
         }
 
-        let (index, feeder) = self.resolve_feeder(index)?;
+        let (_, feeder) = self.resolve_feeder(index)?;
         if let Some(angle) = angle {
-            info!("setting F{} to A{}", index, angle);
             feeder.set_servo_angle(angle)?;
         }
 

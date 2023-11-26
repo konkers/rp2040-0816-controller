@@ -2,18 +2,18 @@ use embassy_time::Timer;
 
 use crate::{
     servo::{PwmLimits, Servo},
-    Error, Result,
+    Error, Result, Value,
 };
 
 #[derive(Clone)]
 pub struct FeederConfig {
-    pub advanced_angle: f32,
-    pub half_advanced_angle: f32,
-    pub retract_angle: f32,
-    pub feed_length: f32,
+    pub advanced_angle: Value,
+    pub half_advanced_angle: Value,
+    pub retract_angle: Value,
+    pub feed_length: Value,
     pub settle_time: u32,
-    pub pwm_0: u16,
-    pub pwm_180: u16,
+    pub pwm_0: Value,
+    pub pwm_180: Value,
     pub ignore_feeback_pin: bool,
 }
 
@@ -24,24 +24,17 @@ pub struct Feeder<'a> {
 }
 
 impl<'a> Feeder<'a> {
-    const DEFAULT_ADVANCED_ANGLE: f32 = 135.0;
-    const DEFAULT_HALF_ADVANCED_ANGLE: f32 = 107.5;
-    const DEFAULT_RETRACT_ANGLE: f32 = 80.0;
-    const DEFAULT_FEED_LENGTH: f32 = 2.0;
-    const DEFAULT_SETTLE_TIME: u32 = 300; // ms
-    const DEFAULT_IGNORE_FEEDBACK_PIN: bool = false;
-
     pub fn new(servo: &'a mut dyn Servo) -> Self {
         let limits = servo.get_pwm_limits();
         let config = FeederConfig {
-            advanced_angle: Self::DEFAULT_ADVANCED_ANGLE,
-            half_advanced_angle: Self::DEFAULT_HALF_ADVANCED_ANGLE,
-            retract_angle: Self::DEFAULT_RETRACT_ANGLE,
-            feed_length: Self::DEFAULT_FEED_LENGTH,
-            settle_time: Self::DEFAULT_SETTLE_TIME,
+            advanced_angle: Value::from_num(135.0),
+            half_advanced_angle: Value::from_num(107.5),
+            retract_angle: Value::from_num(80),
+            feed_length: Value::from_num(2.0),
+            settle_time: 300,
             pwm_0: limits.zero,
             pwm_180: limits.one_eighty,
-            ignore_feeback_pin: Self::DEFAULT_IGNORE_FEEDBACK_PIN,
+            ignore_feeback_pin: false,
         };
 
         Self {
@@ -64,7 +57,7 @@ impl<'a> Feeder<'a> {
         self.config.clone()
     }
 
-    pub fn set_servo_angle(&mut self, angle: f32) -> Result<()> {
+    pub fn set_servo_angle(&mut self, angle: Value) -> Result<()> {
         if self.enabled {
             self.servo.set_angle(angle)
         } else {
