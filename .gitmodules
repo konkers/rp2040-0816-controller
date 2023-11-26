@@ -4,3 +4,6 @@
 [submodule "third_party/embassy-rs"]
 	path = third_party/embassy-rs
 	url = https://github.com/embassy-rs/embassy
+[submodule "third_party/fixed_gcode"]
+	path = third_party/fixed_gcode
+	url = https://github.com/konkers/fixed_gcode
