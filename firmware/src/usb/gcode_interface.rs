@@ -5,14 +5,10 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{self, Channel};
 use embassy_usb::class::cdc_acm::CdcAcmClass;
 use embedded_io_async::Read;
-use fixed::types::extra::U16;
-use fixed::FixedI32;
 use fixed_gcode::BufferTypes;
 use heapless::Vec;
 
-use crate::{Error, Result};
-
-pub type Value = FixedI32<U16>;
+use crate::{Error, Result, Value};
 
 pub struct Types;
 impl BufferTypes<Value> for Types {
