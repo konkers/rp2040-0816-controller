@@ -4,8 +4,12 @@ name = "rp2040-0816"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+test = false
+bench = false
+
 [[bin]]
-name = "rp2040-0816"
+name = "pico"
 test = false
 bench = false
 
@@ -53,7 +57,9 @@ fixed = "1.24"
 fixed_gcode = { version = "0.1.0", path = "../third_party/fixed_gcode", default-features = false }
 heapless = "0.8.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
+pnpfeeder = { version = "0.1.0", path = "../lib/pnpfeeder", default-features = false }
 rp2040-flash = "0.4.0"
+
 
 [profile.release]
 lto = "thin"

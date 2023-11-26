@@ -17,6 +17,21 @@ pub struct FeederConfig {
     pub ignore_feeback_pin: bool,
 }
 
+impl Default for FeederConfig {
+    fn default() -> Self {
+        Self {
+            advanced_angle: Value::from_num(135.0),
+            half_advanced_angle: Value::from_num(107.5),
+            retract_angle: Value::from_num(80),
+            feed_length: Value::from_num(2.0),
+            settle_time: 300,
+            pwm_0: Value::from_num(0),
+            pwm_180: Value::from_num(0),
+            ignore_feeback_pin: false,
+        }
+    }
+}
+
 pub struct Feeder<'a> {
     servo: &'a mut dyn Servo,
     config: FeederConfig,
@@ -27,14 +42,9 @@ impl<'a> Feeder<'a> {
     pub fn new(servo: &'a mut dyn Servo) -> Self {
         let limits = servo.get_pwm_limits();
         let config = FeederConfig {
-            advanced_angle: Value::from_num(135.0),
-            half_advanced_angle: Value::from_num(107.5),
-            retract_angle: Value::from_num(80),
-            feed_length: Value::from_num(2.0),
-            settle_time: 300,
             pwm_0: limits.zero,
             pwm_180: limits.one_eighty,
-            ignore_feeback_pin: false,
+            ..Default::default()
         };
 
         Self {

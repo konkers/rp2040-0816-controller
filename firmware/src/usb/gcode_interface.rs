@@ -1,25 +1,10 @@
 use defmt::info;
 use embassy_futures::select::{select, Either};
 use embassy_rp::usb::{Driver, Instance};
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{self, Channel};
-use embassy_usb::class::cdc_acm::CdcAcmClass;
+use embassy_usb::{class::cdc_acm::CdcAcmClass, driver::EndpointError};
 use embedded_io_async::Read;
-use fixed_gcode::BufferTypes;
 use heapless::Vec;
-
-use crate::{Error, Result, Value};
-
-pub struct Types;
-impl BufferTypes<Value> for Types {
-    type Words = Vec<Word, 5>;
-}
-
-pub type Word = fixed_gcode::Word<Value>;
-pub type Line = fixed_gcode::Line<Value, Types>;
-pub type GCodeLineChannel<const N: usize> = Channel<NoopRawMutex, Line, N>;
-pub type GCodeLineReceiver<'a, const N: usize> = channel::Receiver<'a, NoopRawMutex, Line, N>;
-pub type GCodeLineSender<'a, const N: usize> = channel::Sender<'a, NoopRawMutex, Line, N>;
+use pnpfeeder::{Error, GCodeLineSender, Line, Result};
 
 struct CharAssembler {
     buf: [u8; 4],
@@ -118,6 +103,13 @@ impl<const N: usize> LineReader<N> {
     }
 }
 
+fn to_error(val: EndpointError) -> Error {
+    match val {
+        EndpointError::BufferOverflow => panic!("Buffer overflow"),
+        EndpointError::Disabled => Error::Disconnected {},
+    }
+}
+
 pub struct GCodeInterface<
     'd,
     'g,
@@ -168,18 +160,18 @@ impl<'d, 'g, const GCODE_CHANNEL_LEN: usize, OutputReader: Read, T: Instance + '
             {
                 Either::First(read_len) => {
                     let read_len = read_len.map_err(|_| Error::Io)?;
-                    self.class.write_packet(&output_buf[..read_len]).await?;
+                    self.write(&output_buf[..read_len]).await?;
                 }
                 Either::Second(read_len) => {
-                    let read_len = read_len?;
+                    let read_len = read_len.map_err(to_error)?;
                     // Echo input back to the connection.
-                    self.class.write_packet(&usb_buf[..read_len]).await?;
+                    self.write(&usb_buf[..read_len]).await?;
 
                     for b in &usb_buf[..read_len] {
                         if let Some(line) = line_reader.handle_byte(*b)? {
                             // Echo a new line incase were just send a '\r'.  Having a
                             // real line editor would make things nicer here.
-                            self.class.write_packet(b"\n").await?;
+                            self.write(b"\n").await?;
                             self.handle_line(line).await?;
                         }
                     }
@@ -191,8 +183,12 @@ impl<'d, 'g, const GCODE_CHANNEL_LEN: usize, OutputReader: Read, T: Instance + '
     async fn handle_line(&mut self, line: &str) -> Result<()> {
         match line.parse::<Line>() {
             Ok(command) => self.command_sender.send(command).await,
-            Err(_e) => self.class.write_packet(b"error parsing gcode").await?,
+            Err(_e) => self.write(b"error parsing gcode").await?,
         }
         Ok(())
+    }
+
+    async fn write(&mut self, buffer: &[u8]) -> Result<()> {
+        self.class.write_packet(buffer).await.map_err(to_error)
     }
 }

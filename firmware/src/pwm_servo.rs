@@ -1,34 +1,9 @@
 use az::Cast;
-use embassy_rp::{
-    pwm::{self, Config, Pwm},
-    Peripheral,
-};
+use embassy_rp::pwm::{self, Config, Pwm};
+use embassy_rp::Peripheral;
 use fixed::traits::ToFixed;
-
-use crate::{Error, Result, Value};
-
-#[derive(Clone)]
-pub struct PwmLimits {
-    pub zero: Value,
-    pub one_eighty: Value,
-}
-
-impl PwmLimits {
-    fn scale_angle(&self, angle: Value) -> Result<Value> {
-        if !(0.0..=180.0).contains(&angle) {
-            return Err(Error::AngleOutOfRange);
-        }
-        let range: Value = self.one_eighty - self.zero;
-
-        Ok(self.zero + (range * angle / Value::from_num(180.0)))
-    }
-}
-
-pub trait Servo {
-    fn set_angle(&mut self, angle: Value) -> Result<()>;
-    fn set_pwm_limits(&mut self, limits: PwmLimits) -> Result<()>;
-    fn get_pwm_limits(&self) -> PwmLimits;
-}
+use pnpfeeder::{Error, PwmLimits, Result, Servo, Value};
+use {defmt_rtt as _, panic_probe as _};
 
 pub struct PwmServo<'d, CH: pwm::Channel> {
     pwm: Pwm<'d, CH>,
