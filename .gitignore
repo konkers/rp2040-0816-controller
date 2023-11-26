@@ -1,3 +1,6 @@
 *.bak
 *-backups
 /firmware/target
+/lib/*/target
+/lib/*/Cargo.lock
+.vscode

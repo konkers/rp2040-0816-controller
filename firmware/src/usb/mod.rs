@@ -7,11 +7,10 @@ use embassy_usb::class::cdc_acm::{self, CdcAcmClass};
 use embassy_usb::{Builder, Config};
 use embedded_io_async::Read;
 use heapless::{String, Vec};
+use pnpfeeder::GCodeLineSender;
 
 mod gcode_interface;
 mod picotool;
-
-pub use gcode_interface::{GCodeLineChannel, GCodeLineReceiver, GCodeLineSender, Line, Word};
 
 pub struct Usb<'a, const GCODE_CHANNEL_LEN: usize, OutputReader: Read> {
     gcode_output_reader: OutputReader,

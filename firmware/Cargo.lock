@@ -1052,6 +1052,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "pnpfeeder"
+version = "0.1.0"
+dependencies = [
+ "az",
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "embedded-io-async",
+ "fixed",
+ "fixed_gcode",
+ "futures",
+ "heapless",
+]
+
+[[package]]
 name = "precomputed-hash"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1191,6 +1206,7 @@ dependencies = [
  "fixed_gcode",
  "heapless",
  "panic-probe",
+ "pnpfeeder",
  "rp2040-flash",
 ]
 

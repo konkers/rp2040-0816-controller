@@ -8,7 +8,7 @@ on:
 name: Rust Continuous integration
 
 jobs:
-  test:
+  check:
     name: Check
     runs-on: ubuntu-latest
     steps:
@@ -19,9 +19,28 @@ jobs:
         with:
           targets: "thumbv6m-none-eabi"
           components: "clippy,rustfmt"
-      - name: check
+      - name:
         working-directory: "firmware"
-        run: cargo check
+        run: cargo check --all-targets
+      - name:
+        working-directory: "lib/pnpfeeder"
+        run: cargo check --all-targets
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:  
+          submodules: true
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: "thumbv6m-none-eabi"
+          components: "clippy,rustfmt"
+      - name:
+        working-directory: "lib/pnpfeeder"
+        run: cargo test
+
 
   build:
     name: Build and upload firmware
@@ -34,7 +53,7 @@ jobs:
         with:
           targets: "thumbv6m-none-eabi"
           components: "clippy,rustfmt"
-      - name: Install libudev
+      - name: install libudev
         run: sudo apt-get install -y libudev-dev
       - 
         working-directory: "firmware"
@@ -44,11 +63,11 @@ jobs:
         run: cargo build --release
       -
         working-directory: "firmware"
-        run: elf2uf2-rs target/thumbv6m-none-eabi/release/rp2040-0816 target/thumbv6m-none-eabi/release/rp2040-0816.uf2
+        run: elf2uf2-rs target/thumbv6m-none-eabi/release/pico target/thumbv6m-none-eabi/release/pico.uf2
       - uses: actions/upload-artifact@v3
         with:
-          name: rp2040-0816.uf2
-          path: firmware/target/thumbv6m-none-eabi/release/rp2040-0816.uf2
+          name: rp2040-0816-pico.uf2
+          path: firmware/target/thumbv6m-none-eabi/release/pico.uf2
 
   fmt:
     name: Fmt
@@ -64,9 +83,12 @@ jobs:
       - 
         working-directory: "firmware"
         run: cargo fmt --all -- --check
+      - 
+        working-directory: "lib/pnpfeeder"
+        run: cargo fmt --all -- --check
 
   clippy:
-    name: clippy
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,4 +100,7 @@ jobs:
           components: "clippy,rustfmt"
       - 
         working-directory: "firmware"
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+      - 
+        working-directory: "lib/pnpfeeder"
+        run: cargo clippy --all-targets -- -D warnings

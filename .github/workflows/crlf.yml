@@ -17,3 +17,6 @@ jobs:
       - uses: erclu/check-crlf@v1
         with: 
           path: ./firmware
+      - uses: erclu/check-crlf@v1
+        with: 
+          path: ./lib
