@@ -14,7 +14,7 @@ use heapless::{String, Vec};
 
 mod feeder;
 mod servo;
-pub use feeder::{Feeder, FeederConfig};
+pub use feeder::{Feeder, FeederChannel, FeederClient, FeederConfig};
 pub use servo::{PwmLimits, Servo};
 
 pub type Value = FixedI32<U16>;
@@ -28,6 +28,7 @@ impl BufferTypes<Value> for Types {
 pub type Word = fixed_gcode::Word<Value>;
 pub type Line = fixed_gcode::Line<Value, Types>;
 
+#[derive(Debug)]
 pub enum Error {
     Disconnected,
     InputBufferOverflow,
@@ -40,6 +41,7 @@ pub enum Error {
     InvalidArgument(char),
     FeederDisabled,
     FixedPointError,
+    InvalidFeederCommandResponse,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -58,6 +60,7 @@ impl Display for Error {
             Self::InvalidArgument(char) => write!(f, "invalid argument type {}", char),
             Self::FeederDisabled => write!(f, "feeder disabled"),
             Self::FixedPointError => write!(f, "fixed point error"),
+            Self::InvalidFeederCommandResponse => write!(f, "invalid feeder command respons"),
         }
     }
 }
@@ -66,8 +69,8 @@ pub type GCodeLineChannel<const N: usize> = Channel<NoopRawMutex, Line, N>;
 pub type GCodeLineReceiver<'a, const N: usize> = channel::Receiver<'a, NoopRawMutex, Line, N>;
 pub type GCodeLineSender<'a, const N: usize> = channel::Sender<'a, NoopRawMutex, Line, N>;
 
-pub struct GCodeHandler<'a, 'b: 'a, W: Write> {
-    feeders: &'a mut [Feeder<'b>],
+pub struct GCodeHandler<'a, W: Write, const N: usize> {
+    feeders: [FeederClient<'a>; N],
     output: W,
 }
 
@@ -77,8 +80,8 @@ macro_rules! word {
     };
 }
 
-impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
-    pub fn new(feeders: &'a mut [Feeder<'b>], output: W) -> Self {
+impl<'a, W: Write, const N: usize> GCodeHandler<'a, W, N> {
+    pub fn new(feeders: [FeederClient<'a>; N], output: W) -> Self {
         Self { feeders, output }
     }
 
@@ -93,6 +96,9 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
             // Use M999 to allow tests to exit the loop.
             #[cfg(test)]
             if *command == word!('M', 999) {
+                for feeder in self.feeders.iter_mut() {
+                    feeder.shutdown().await;
+                }
                 return;
             }
 
@@ -123,7 +129,13 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         }
     }
 
-    fn resolve_feeder(&mut self, index: Option<usize>) -> Result<(usize, &mut Feeder<'b>)> {
+    fn resolve_feeder<'b>(
+        &'b mut self,
+        index: Option<usize>,
+    ) -> Result<(usize, &'b mut FeederClient<'a>)>
+    where
+        'a: 'b,
+    {
         let index = index.ok_or(Error::NoIndex)?;
 
         if index >= self.feeders.len() {
@@ -146,7 +158,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
 
         let (_, feeder) = self.resolve_feeder(index)?;
         if let Some(angle) = angle {
-            feeder.set_servo_angle(angle)?;
+            feeder.set_servo_angle(angle).await?;
         }
 
         Ok(())
@@ -185,7 +197,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
 
         if let Some(status) = status {
             for feeder in self.feeders.iter_mut() {
-                feeder.enable(status);
+                feeder.enable(status).await?;
             }
         }
 
@@ -219,7 +231,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         }
 
         let (_, feeder) = self.resolve_feeder(index)?;
-        let mut config = feeder.get_config();
+        let mut config = feeder.get_config().await?;
 
         macro_rules! handle_parameter {
             ($parameter:ident) => {
@@ -238,7 +250,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         handle_parameter!(pwm_180);
         handle_parameter!(ignore_feeback_pin);
 
-        feeder.set_config(config)?;
+        feeder.set_config(config).await?;
 
         Ok(())
     }
@@ -253,7 +265,7 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
         }
 
         let (index, feeder) = self.resolve_feeder(index)?;
-        let config = feeder.get_config();
+        let config = feeder.get_config().await?;
 
         let mut s: String<64> = String::new();
         writeln!(
@@ -278,32 +290,41 @@ impl<'a, 'b: 'a, W: Write> GCodeHandler<'a, 'b, W> {
 
 #[cfg(test)]
 mod tests {
-    use embassy_futures::join::join;
-    use std::{string::String, vec::Vec};
+    extern crate alloc;
+    use alloc::sync::Arc;
+    use embassy_futures::join::{join, join_array};
+    use std::{string::String, sync::Mutex, vec::Vec};
 
     use super::*;
 
     struct FakeServo {
         limits: servo::PwmLimits,
-        positions: Vec<Value>,
+        positions: Arc<Mutex<Vec<Value>>>,
     }
 
     impl FakeServo {
         const COUNTS_PER_PERIOD: u16 = 9804;
-        fn new() -> Self {
+        fn new() -> (Arc<Mutex<Vec<Value>>>, Self) {
             let counts_per_ms = Value::from_num(Self::COUNTS_PER_PERIOD) / Value::from_num(20.0);
             let zero = Value::from_num(1.0) * counts_per_ms;
             let one_eighty = Value::from_num(2.0) * counts_per_ms;
-            Self {
-                limits: PwmLimits { zero, one_eighty },
-                positions: Vec::new(),
-            }
+
+            let positions = Arc::new(Mutex::new(Vec::new()));
+            (
+                positions.clone(),
+                Self {
+                    limits: PwmLimits { zero, one_eighty },
+                    positions,
+                },
+            )
         }
     }
 
     impl Servo for FakeServo {
         fn set_angle(&mut self, angle: Value) -> Result<()> {
-            self.positions.push(angle);
+            println!("fake servo: set angle {angle}");
+
+            self.positions.lock().unwrap().push(angle);
             Ok(())
         }
 
@@ -322,7 +343,7 @@ mod tests {
     }
 
     async fn run_handler<W: Write>(
-        feeders: &mut [Feeder<'_>],
+        feeders: [FeederClient<'_>; 2],
         output: W,
         line_reciever: GCodeLineReceiver<'_, 2>,
     ) {
@@ -331,15 +352,29 @@ mod tests {
     }
     async fn run_test_harness(
         line_reciever: GCodeLineReceiver<'_, 2>,
-    ) -> ([FakeServo; 2], Vec<u8>) {
-        let mut servo_0 = FakeServo::new();
-        let mut servo_1 = FakeServo::new();
-        let feeder_0 = Feeder::new(&mut servo_0);
-        let feeder_1 = Feeder::new(&mut servo_1);
-        let mut feeders = [feeder_0, feeder_1];
+    ) -> ([Vec<Value>; 2], Vec<u8>) {
+        let (positions_0, servo_0) = FakeServo::new();
+        let (positions_1, servo_1) = FakeServo::new();
+        let mut feeder_0 = Feeder::new(servo_0);
+        let mut feeder_1 = Feeder::new(servo_1);
+        let channels = [&FeederChannel::new(), &FeederChannel::new()];
+        let feeder_future = join_array([feeder_0.run(channels[0]), feeder_1.run(channels[1])]);
         let mut output = Vec::<u8>::new();
-        run_handler(&mut feeders, &mut output, line_reciever).await;
-        ([servo_0, servo_1], output)
+        join(
+            feeder_future,
+            run_handler(
+                [
+                    FeederClient::new(channels[0]),
+                    FeederClient::new(channels[1]),
+                ],
+                &mut output,
+                line_reciever,
+            ),
+        )
+        .await;
+        let positions_0 = positions_0.lock().unwrap().clone();
+        let positions_1 = positions_1.lock().unwrap().clone();
+        ([positions_0, positions_1], output)
     }
 
     #[futures_test::test]
@@ -362,8 +397,8 @@ mod tests {
         };
         let ((servos, output), _) = join(test_harness_future, test_future).await;
         assert_eq!("error: feeder disabled\n", String::from_utf8_lossy(&output));
-        assert!(servos[0].positions.is_empty());
-        assert!(servos[1].positions.is_empty());
+        assert!(servos[0].is_empty());
+        assert!(servos[1].is_empty());
     }
 
     #[futures_test::test]
@@ -378,8 +413,8 @@ mod tests {
         };
         let ((servos, output), _) = join(test_harness_future, test_future).await;
         println!("{}", String::from_utf8_lossy(&output));
-        assert!(servos[0].positions.is_empty());
-        assert_eq!(servos[1].positions, vec![Value::from_num(120.0)]);
+        assert!(servos[0].is_empty());
+        assert_eq!(servos[1], vec![Value::from_num(120.0)]);
     }
 
     #[futures_test::test]
@@ -395,12 +430,12 @@ mod tests {
         let ((servos, output), _) = join(test_harness_future, test_future).await;
 
         println!("{}", String::from_utf8_lossy(&output));
-        assert!(servos[0].positions.is_empty());
+        assert!(servos[0].is_empty());
 
         // Servo 1 should go to the advanced angle then the retract angle.
         let feeder_config_defaults: FeederConfig = Default::default();
         assert_eq!(
-            servos[1].positions,
+            servos[1],
             vec![
                 feeder_config_defaults.advanced_angle,
                 feeder_config_defaults.retract_angle
@@ -422,15 +457,30 @@ mod tests {
         let ((servos, output), _) = join(test_harness_future, test_future).await;
 
         println!("{}", String::from_utf8_lossy(&output));
-        assert!(servos[0].positions.is_empty());
-        assert_eq!(
-            servos[1].positions,
-            vec![Value::from_num(122), Value::from_num(22)]
-        );
+        assert!(servos[0].is_empty());
+        assert_eq!(servos[1], vec![Value::from_num(122), Value::from_num(22)]);
     }
 
     #[futures_test::test]
     async fn m621_reflects_m620_changes() {
+        let gcode_channel = GCodeLineChannel::<2>::new();
+        let test_harness_future = run_test_harness(gcode_channel.receiver());
+        let line_sender = gcode_channel.sender();
+        let test_future = async move {
+            line_sender
+                .send("M620 N1 A1 B2 C3 F4 U5 V6 W7 X1".parse().unwrap())
+                .await;
+            line_sender.send("M621 N1".parse().unwrap()).await;
+            line_sender.send("M999".parse().unwrap()).await;
+        };
+        let ((_servos, output), _) = join(test_harness_future, test_future).await;
+
+        let output = String::from_utf8_lossy(&output);
+        assert_eq!(output, "ok\nM620 N1 A1 B2 C3 F4 U5 V6 W7 X1\nok\n");
+    }
+
+    #[futures_test::test]
+    async fn task_test() {
         let gcode_channel = GCodeLineChannel::<2>::new();
         let test_harness_future = run_test_harness(gcode_channel.receiver());
         let line_sender = gcode_channel.sender();
