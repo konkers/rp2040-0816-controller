@@ -299,6 +299,7 @@ mod tests {
     extern crate alloc;
     use alloc::sync::Arc;
     use embassy_futures::join::{join, join_array};
+    use embassy_time::Timer;
     use std::{string::String, sync::Mutex, vec::Vec};
 
     use super::*;
@@ -387,6 +388,10 @@ mod tests {
 
         async fn wait_for_low(&mut self) {
             self.wait_for_state(false).await
+        }
+
+        async fn wait_for_state_change(&mut self) {
+            self.state = self.channel.receive().await;
         }
 
         async fn get_state(&mut self) -> bool {
@@ -587,7 +592,7 @@ mod tests {
         let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
         let line_sender = gcode_channel.sender();
 
-        // drive feedback hgih.
+        // drive feedback high.
         fake_inputs[0].send(true).await;
 
         let test_future = async move {
@@ -600,5 +605,36 @@ mod tests {
 
         let output = String::from_utf8_lossy(&output);
         assert_eq!(output, "ok\nok\nok\n");
+    }
+
+    #[futures_test::test]
+    async fn feedback_pulse_advances_feeder() {
+        let gcode_channel = GCodeLineChannel::<2>::new();
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
+        let line_sender = gcode_channel.sender();
+        let feedback0 = &fake_inputs[0];
+
+        // Start with switch unpressed.
+        feedback0.send(true).await;
+
+        let test_future = async move {
+            line_sender.send("M610 S1".parse().unwrap()).await;
+            // Set to known angles
+            line_sender.send("M620 N0 A122 C22".parse().unwrap()).await;
+            // Press switch
+
+            feedback0.send(false).await;
+            Timer::after_micros(250_000).await;
+            // Release switch.
+            feedback0.send(true).await;
+
+            line_sender.send("M999".parse().unwrap()).await;
+        };
+        let ((servos, output), _) = join(test_harness_future, test_future).await;
+
+        println!("{}", String::from_utf8_lossy(&output));
+        assert_eq!(servos[0], vec![Value::from_num(122), Value::from_num(22)]);
+        assert!(servos[1].is_empty());
     }
 }
