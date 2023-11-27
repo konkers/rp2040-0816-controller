@@ -21,6 +21,10 @@ impl<'d, T: Pin> Input for GpioInput<'d, T> {
         self.input.wait_for_low().await
     }
 
+    async fn wait_for_state_change(&mut self) {
+        self.input.wait_for_any_edge().await
+    }
+
     async fn get_state(&mut self) -> bool {
         self.input.get_level() == Level::High
     }
