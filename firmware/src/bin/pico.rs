@@ -6,12 +6,12 @@
 #![feature(str_internals)]
 
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
+use embassy_futures::join::{join3, join4};
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::InterruptHandler;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, pipe::Pipe};
-use pnpfeeder::{Feeder, GCodeHandler, GCodeLineChannel};
+use pnpfeeder::{Feeder, FeederChannel, FeederClient, GCodeHandler, GCodeLineChannel};
 use rp2040_0816::{pwm_servo::PwmServo, usb};
 use rp2040_flash::flash;
 
@@ -25,17 +25,6 @@ bind_interrupts!(struct Irqs {
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    let mut servo_0 = PwmServo::new_a(p.PWM_CH0, p.PIN_16);
-    let feeder_0 = Feeder::new(&mut servo_0);
-    let mut servo_1 = PwmServo::new_a(p.PWM_CH1, p.PIN_18);
-    let feeder_1 = Feeder::new(&mut servo_1);
-    let mut servo_2 = PwmServo::new_a(p.PWM_CH2, p.PIN_20);
-    let feeder_2 = Feeder::new(&mut servo_2);
-    let mut servo_3 = PwmServo::new_a(p.PWM_CH7, p.PIN_14);
-    let feeder_3 = Feeder::new(&mut servo_3);
-
-    let mut feeders = [feeder_0, feeder_1, feeder_2, feeder_3];
-
     let _jedec_id: u32 = unsafe { cortex_m::interrupt::free(|_cs| flash::flash_jedec_id(true)) };
     let mut unique_id = [0u8; 8];
     unsafe { cortex_m::interrupt::free(|_cs| flash::flash_unique_id(&mut unique_id, true)) };
@@ -48,8 +37,35 @@ async fn main(_spawner: Spawner) {
     let usb = usb::Usb::new(gcode_output_reader, gcode_command_channel.sender());
     let usb_future = usb.run(p.USB, Irqs, &unique_id);
 
-    let mut gcode_handler = GCodeHandler::new(&mut feeders, gcode_output_writer);
+    let mut feeder_0 = Feeder::new(PwmServo::new_a(p.PWM_CH0, p.PIN_16));
+    let mut feeder_1 = Feeder::new(PwmServo::new_a(p.PWM_CH1, p.PIN_18));
+    let mut feeder_2 = Feeder::new(PwmServo::new_a(p.PWM_CH2, p.PIN_20));
+    let mut feeder_3 = Feeder::new(PwmServo::new_a(p.PWM_CH7, p.PIN_14));
+
+    let channels = [
+        &FeederChannel::new(),
+        &FeederChannel::new(),
+        &FeederChannel::new(),
+        &FeederChannel::new(),
+    ];
+
+    let feeder_future = join4(
+        feeder_0.run(channels[0]),
+        feeder_1.run(channels[1]),
+        feeder_2.run(channels[2]),
+        feeder_3.run(channels[3]),
+    );
+
+    let mut gcode_handler = GCodeHandler::new(
+        [
+            FeederClient::new(channels[0]),
+            FeederClient::new(channels[1]),
+            FeederClient::new(channels[2]),
+            FeederClient::new(channels[3]),
+        ],
+        gcode_output_writer,
+    );
     let gcode_future = gcode_handler.run(gcode_command_channel.receiver());
 
-    join(usb_future, gcode_future).await;
+    join3(usb_future, gcode_future, feeder_future).await;
 }
