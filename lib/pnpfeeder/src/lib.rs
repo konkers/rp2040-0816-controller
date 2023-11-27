@@ -1,3 +1,4 @@
+#![feature(type_alias_impl_trait)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 use az::Cast;
@@ -13,8 +14,11 @@ use fixed_gcode::BufferTypes;
 use heapless::{String, Vec};
 
 mod feeder;
+mod input;
 mod servo;
+
 pub use feeder::{Feeder, FeederChannel, FeederClient, FeederConfig};
+pub use input::Input;
 pub use servo::{PwmLimits, Servo};
 
 pub type Value = FixedI32<U16>;
@@ -42,6 +46,7 @@ pub enum Error {
     FeederDisabled,
     FixedPointError,
     InvalidFeederCommandResponse,
+    FeederNotReady,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -61,6 +66,7 @@ impl Display for Error {
             Self::FeederDisabled => write!(f, "feeder disabled"),
             Self::FixedPointError => write!(f, "fixed point error"),
             Self::InvalidFeederCommandResponse => write!(f, "invalid feeder command respons"),
+            Self::FeederNotReady => write!(f, "feeder not ready"),
         }
     }
 }
@@ -342,6 +348,52 @@ mod tests {
         }
     }
 
+    type FakeInputChannel = Channel<NoopRawMutex, bool, 4>;
+
+    struct FakeInput<'a> {
+        channel: &'a FakeInputChannel,
+        state: bool,
+    }
+
+    impl<'a> FakeInput<'a> {
+        pub fn new(state: bool, channel: &'a FakeInputChannel) -> Self {
+            Self { channel, state }
+        }
+
+        async fn poll_state(&mut self) -> bool {
+            loop {
+                // Consume all update events in queue and return state when empty.
+                let Ok(new_state) = self.channel.try_receive() else {
+                    return self.state;
+                };
+                self.state = new_state;
+            }
+        }
+
+        async fn wait_for_state(&mut self, state: bool) {
+            loop {
+                let new_state = self.poll_state().await;
+                if new_state == state {
+                    return;
+                }
+            }
+        }
+    }
+
+    impl<'a> Input for FakeInput<'a> {
+        async fn wait_for_high(&mut self) {
+            self.wait_for_state(true).await
+        }
+
+        async fn wait_for_low(&mut self) {
+            self.wait_for_state(false).await
+        }
+
+        async fn get_state(&mut self) -> bool {
+            self.poll_state().await
+        }
+    }
+
     async fn run_handler<W: Write>(
         feeders: [FeederClient<'_>; 2],
         output: W,
@@ -352,11 +404,12 @@ mod tests {
     }
     async fn run_test_harness(
         line_reciever: GCodeLineReceiver<'_, 2>,
+        fake_inputs: &[FakeInputChannel; 2],
     ) -> ([Vec<Value>; 2], Vec<u8>) {
         let (positions_0, servo_0) = FakeServo::new();
         let (positions_1, servo_1) = FakeServo::new();
-        let mut feeder_0 = Feeder::new(servo_0);
-        let mut feeder_1 = Feeder::new(servo_1);
+        let mut feeder_0 = Feeder::new(servo_0, FakeInput::new(false, &fake_inputs[0]));
+        let mut feeder_1 = Feeder::new(servo_1, FakeInput::new(false, &fake_inputs[1]));
         let channels = [&FeederChannel::new(), &FeederChannel::new()];
         let feeder_future = join_array([feeder_0.run(channels[0]), feeder_1.run(channels[1])]);
         let mut output = Vec::<u8>::new();
@@ -380,7 +433,8 @@ mod tests {
     #[futures_test::test]
     async fn test_harnes_exits_on_m999() {
         let gcode_channel = GCodeLineChannel::<2>::new();
-        let test_harness_future = run_test_harness(gcode_channel.receiver());
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
         let line_sender = gcode_channel.sender();
         let test_future = async move { line_sender.send("M999".parse().unwrap()).await };
         let (_, _) = join(test_harness_future, test_future).await;
@@ -389,7 +443,8 @@ mod tests {
     #[futures_test::test]
     async fn feeder_doesnt_move_before_enabled() {
         let gcode_channel = GCodeLineChannel::<2>::new();
-        let test_harness_future = run_test_harness(gcode_channel.receiver());
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender.send("G0 N1 A120.0".parse().unwrap()).await;
@@ -404,7 +459,8 @@ mod tests {
     #[futures_test::test]
     async fn g0_moves_correct_servo() {
         let gcode_channel = GCodeLineChannel::<2>::new();
-        let test_harness_future = run_test_harness(gcode_channel.receiver());
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender.send("M610 S1".parse().unwrap()).await;
@@ -420,7 +476,8 @@ mod tests {
     #[futures_test::test]
     async fn m600_advances_feeder() {
         let gcode_channel = GCodeLineChannel::<2>::new();
-        let test_harness_future = run_test_harness(gcode_channel.receiver());
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender.send("M610 S1".parse().unwrap()).await;
@@ -446,7 +503,8 @@ mod tests {
     #[futures_test::test]
     async fn m620_changes_feeder_angles() {
         let gcode_channel = GCodeLineChannel::<2>::new();
-        let test_harness_future = run_test_harness(gcode_channel.receiver());
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender.send("M610 S1".parse().unwrap()).await;
@@ -464,7 +522,8 @@ mod tests {
     #[futures_test::test]
     async fn m621_reflects_m620_changes() {
         let gcode_channel = GCodeLineChannel::<2>::new();
-        let test_harness_future = run_test_harness(gcode_channel.receiver());
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender
@@ -480,20 +539,66 @@ mod tests {
     }
 
     #[futures_test::test]
-    async fn task_test() {
+    async fn advance_returns_error_on_high_feedback() {
         let gcode_channel = GCodeLineChannel::<2>::new();
-        let test_harness_future = run_test_harness(gcode_channel.receiver());
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
         let line_sender = gcode_channel.sender();
+
+        // drive feedback hgih.
+        fake_inputs[0].send(true).await;
+
         let test_future = async move {
-            line_sender
-                .send("M620 N1 A1 B2 C3 F4 U5 V6 W7 X1".parse().unwrap())
-                .await;
-            line_sender.send("M621 N1".parse().unwrap()).await;
+            line_sender.send("M610 S1".parse().unwrap()).await;
+            line_sender.send("M600 N0".parse().unwrap()).await;
             line_sender.send("M999".parse().unwrap()).await;
         };
         let ((_servos, output), _) = join(test_harness_future, test_future).await;
 
         let output = String::from_utf8_lossy(&output);
-        assert_eq!(output, "ok\nM620 N1 A1 B2 C3 F4 U5 V6 W7 X1\nok\n");
+        assert_eq!(output, "ok\nerror: feeder not ready\n");
+    }
+
+    #[futures_test::test]
+    async fn advance_respects_override_error_arg() {
+        let gcode_channel = GCodeLineChannel::<2>::new();
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
+        let line_sender = gcode_channel.sender();
+
+        // drive feedback hgih.
+        fake_inputs[0].send(true).await;
+
+        let test_future = async move {
+            line_sender.send("M610 S1".parse().unwrap()).await;
+            line_sender.send("M600 N0 X1".parse().unwrap()).await;
+            line_sender.send("M999".parse().unwrap()).await;
+        };
+        let ((_servos, output), _) = join(test_harness_future, test_future).await;
+
+        let output = String::from_utf8_lossy(&output);
+        assert_eq!(output, "ok\nok\n");
+    }
+
+    #[futures_test::test]
+    async fn advance_respects_ignore_feedback_pin_config() {
+        let gcode_channel = GCodeLineChannel::<2>::new();
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
+        let line_sender = gcode_channel.sender();
+
+        // drive feedback hgih.
+        fake_inputs[0].send(true).await;
+
+        let test_future = async move {
+            line_sender.send("M610 S1".parse().unwrap()).await;
+            line_sender.send("M620 N0 X1".parse().unwrap()).await;
+            line_sender.send("M600 N0".parse().unwrap()).await;
+            line_sender.send("M999".parse().unwrap()).await;
+        };
+        let ((_servos, output), _) = join(test_harness_future, test_future).await;
+
+        let output = String::from_utf8_lossy(&output);
+        assert_eq!(output, "ok\nok\nok\n");
     }
 }
