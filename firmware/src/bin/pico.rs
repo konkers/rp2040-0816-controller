@@ -31,7 +31,7 @@ async fn main(_spawner: Spawner) {
     let feeder_1 = Feeder::new(&mut servo_1);
     let mut servo_2 = PwmServo::new_a(p.PWM_CH2, p.PIN_20);
     let feeder_2 = Feeder::new(&mut servo_2);
-    let mut servo_3 = PwmServo::new_a(p.PWM_CH3, p.PIN_22);
+    let mut servo_3 = PwmServo::new_a(p.PWM_CH7, p.PIN_14);
     let feeder_3 = Feeder::new(&mut servo_3);
 
     let mut feeders = [feeder_0, feeder_1, feeder_2, feeder_3];
