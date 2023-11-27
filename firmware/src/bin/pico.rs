@@ -8,11 +8,12 @@
 use embassy_executor::Spawner;
 use embassy_futures::join::{join3, join4};
 use embassy_rp::bind_interrupts;
+use embassy_rp::gpio::{self, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::InterruptHandler;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, pipe::Pipe};
 use pnpfeeder::{Feeder, FeederChannel, FeederClient, GCodeHandler, GCodeLineChannel};
-use rp2040_0816::{pwm_servo::PwmServo, usb};
+use rp2040_0816::{gpio_input::GpioInput, pwm_servo::PwmServo, usb};
 use rp2040_flash::flash;
 
 use {defmt_rtt as _, panic_probe as _};
@@ -37,10 +38,22 @@ async fn main(_spawner: Spawner) {
     let usb = usb::Usb::new(gcode_output_reader, gcode_command_channel.sender());
     let usb_future = usb.run(p.USB, Irqs, &unique_id);
 
-    let mut feeder_0 = Feeder::new(PwmServo::new_a(p.PWM_CH0, p.PIN_16));
-    let mut feeder_1 = Feeder::new(PwmServo::new_a(p.PWM_CH1, p.PIN_18));
-    let mut feeder_2 = Feeder::new(PwmServo::new_a(p.PWM_CH2, p.PIN_20));
-    let mut feeder_3 = Feeder::new(PwmServo::new_a(p.PWM_CH7, p.PIN_14));
+    let mut feeder_0 = Feeder::new(
+        PwmServo::new_a(p.PWM_CH0, p.PIN_16),
+        GpioInput::new(gpio::Input::new(p.PIN_17, Pull::Up)),
+    );
+    let mut feeder_1 = Feeder::new(
+        PwmServo::new_a(p.PWM_CH1, p.PIN_18),
+        GpioInput::new(gpio::Input::new(p.PIN_19, Pull::Up)),
+    );
+    let mut feeder_2 = Feeder::new(
+        PwmServo::new_a(p.PWM_CH2, p.PIN_20),
+        GpioInput::new(gpio::Input::new(p.PIN_21, Pull::Up)),
+    );
+    let mut feeder_3 = Feeder::new(
+        PwmServo::new_a(p.PWM_CH7, p.PIN_14),
+        GpioInput::new(gpio::Input::new(p.PIN_15, Pull::Up)),
+    );
 
     let channels = [
         &FeederChannel::new(),

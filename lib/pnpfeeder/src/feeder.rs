@@ -6,7 +6,7 @@ use embassy_time::Timer;
 
 use crate::{
     servo::{PwmLimits, Servo},
-    Error, Result, Value,
+    Error, Input, Result, Value,
 };
 
 #[derive(Clone, Debug)]
@@ -150,14 +150,15 @@ impl<'a> FeederClient<'a> {
     }
 }
 
-pub struct Feeder<S: Servo> {
+pub struct Feeder<S: Servo, I: Input> {
     servo: S,
+    feedback: I,
     config: FeederConfig,
     enabled: bool,
 }
 
-impl<S: Servo> Feeder<S> {
-    pub fn new(servo: S) -> Self {
+impl<S: Servo, I: Input> Feeder<S, I> {
+    pub fn new(servo: S, feedback: I) -> Self {
         let limits = servo.get_pwm_limits();
         let config = FeederConfig {
             pwm_0: limits.zero,
@@ -167,6 +168,7 @@ impl<S: Servo> Feeder<S> {
 
         Self {
             servo,
+            feedback,
             config,
             enabled: false,
         }
@@ -218,7 +220,12 @@ impl<S: Servo> Feeder<S> {
         Timer::after_micros(self.config.settle_time as u64 * 1000).await;
     }
 
-    pub async fn advance(&mut self, _length: Option<Value>, _override_error: bool) -> Result<()> {
+    pub async fn advance(&mut self, _length: Option<Value>, override_error: bool) -> Result<()> {
+        let override_error = override_error || self.config.ignore_feeback_pin;
+        if !override_error && self.feedback.get_state().await {
+            return Err(Error::FeederNotReady);
+        }
+
         self.set_servo_angle(self.config.advanced_angle)?;
         self.settle().await;
         self.set_servo_angle(self.config.retract_angle)?;
