@@ -12,7 +12,7 @@ use embassy_rp::gpio::{self, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::InterruptHandler;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, pipe::Pipe};
-use pnpfeeder::{Feeder, FeederChannel, FeederClient, GCodeHandler, GCodeLineChannel};
+use pnpfeeder::{Feeder, FeederChannel, FeederClient, GCodeEventChannel, GCodeHandler};
 use rp2040_0816::{gpio_input::GpioInput, pwm_servo::PwmServo, usb};
 use rp2040_flash::flash;
 
@@ -33,9 +33,9 @@ async fn main(_spawner: Spawner) {
     let mut cdc_output_pipe = Pipe::<NoopRawMutex, 256>::new();
     let (gcode_output_reader, gcode_output_writer) = cdc_output_pipe.split();
 
-    let gcode_command_channel = GCodeLineChannel::<2>::new();
+    let gcode_event_channel = GCodeEventChannel::<2>::new();
 
-    let usb = usb::Usb::new(gcode_output_reader, gcode_command_channel.sender());
+    let usb = usb::Usb::new(gcode_output_reader, gcode_event_channel.sender());
     let usb_future = usb.run(p.USB, Irqs, &unique_id);
 
     let mut feeder_0 = Feeder::new(
@@ -78,7 +78,7 @@ async fn main(_spawner: Spawner) {
         ],
         gcode_output_writer,
     );
-    let gcode_future = gcode_handler.run(gcode_command_channel.receiver());
+    let gcode_future = gcode_handler.run(gcode_event_channel.receiver());
 
     join3(usb_future, gcode_future, feeder_future).await;
 }
