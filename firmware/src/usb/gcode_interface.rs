@@ -1,10 +1,13 @@
 use defmt::info;
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select3, Either3};
 use embassy_rp::usb::{Driver, Instance};
-use embassy_usb::{class::cdc_acm::CdcAcmClass, driver::EndpointError};
+use embassy_usb::{
+    class::cdc_acm::{self, CdcAcmClass},
+    driver::EndpointError,
+};
 use embedded_io_async::Read;
 use heapless::Vec;
-use pnpfeeder::{Error, GCodeLineSender, Line, Result};
+use pnpfeeder::{Error, GCodeEvent, GCodeEventSender, Line, Result};
 
 struct CharAssembler {
     buf: [u8; 4],
@@ -117,9 +120,12 @@ pub struct GCodeInterface<
     OutputReader: Read,
     T: Instance + 'd,
 > {
-    class: CdcAcmClass<'d, Driver<'d, T>>,
+    cdc_sender: cdc_acm::Sender<'d, Driver<'d, T>>,
+    cdc_receiver: cdc_acm::Receiver<'d, Driver<'d, T>>,
+    cdc_control_changed: cdc_acm::ControlChanged<'d>,
     output_reader: OutputReader,
-    command_sender: GCodeLineSender<'g, GCODE_CHANNEL_LEN>,
+    event_sender: GCodeEventSender<'g, GCODE_CHANNEL_LEN>,
+    connected: bool,
 }
 
 impl<'d, 'g, const GCODE_CHANNEL_LEN: usize, OutputReader: Read, T: Instance + 'd>
@@ -128,19 +134,23 @@ impl<'d, 'g, const GCODE_CHANNEL_LEN: usize, OutputReader: Read, T: Instance + '
     pub fn new(
         class: CdcAcmClass<'d, Driver<'d, T>>,
         output_reader: OutputReader,
-        command_sender: GCodeLineSender<'g, GCODE_CHANNEL_LEN>,
+        event_sender: GCodeEventSender<'g, GCODE_CHANNEL_LEN>,
     ) -> Self {
+        let (cdc_sender, cdc_receiver, cdc_control_changed) = class.split_with_control();
         Self {
-            class,
+            cdc_sender,
+            cdc_receiver,
+            cdc_control_changed,
             output_reader,
-            command_sender,
+            event_sender,
+            connected: false,
         }
     }
 
     pub async fn run(&mut self) {
         loop {
             info!("Waiting for connection");
-            self.class.wait_connection().await;
+            self.cdc_sender.wait_connection().await;
             info!("USB Connected");
             let _ = self.handle_connection().await;
             info!("USB Disconnected");
@@ -152,17 +162,27 @@ impl<'d, 'g, const GCODE_CHANNEL_LEN: usize, OutputReader: Read, T: Instance + '
         let mut output_buf = [0; 64];
         let mut line_reader = LineReader::<64>::new();
         loop {
-            match select(
+            match select3(
                 self.output_reader.read(&mut output_buf),
-                self.class.read_packet(&mut usb_buf),
+                self.cdc_control_changed.control_changed(),
+                self.cdc_receiver.read_packet(&mut usb_buf),
             )
             .await
             {
-                Either::First(read_len) => {
+                Either3::First(read_len) => {
                     let read_len = read_len.map_err(|_| Error::Io)?;
                     self.write(&output_buf[..read_len]).await?;
                 }
-                Either::Second(read_len) => {
+                Either3::Second(()) => {
+                    let new_connected = self.cdc_receiver.dtr();
+                    if new_connected && !self.connected {
+                        self.event_sender.send(GCodeEvent::Connect).await;
+                    } else if !new_connected && self.connected {
+                        self.event_sender.send(GCodeEvent::Disconnect).await;
+                    }
+                    self.connected = new_connected;
+                }
+                Either3::Third(read_len) => {
                     let read_len = read_len.map_err(to_error)?;
                     // Echo input back to the connection.
                     self.write(&usb_buf[..read_len]).await?;
@@ -182,13 +202,13 @@ impl<'d, 'g, const GCODE_CHANNEL_LEN: usize, OutputReader: Read, T: Instance + '
 
     async fn handle_line(&mut self, line: &str) -> Result<()> {
         match line.parse::<Line>() {
-            Ok(command) => self.command_sender.send(command).await,
+            Ok(command) => self.event_sender.send(GCodeEvent::Line(command)).await,
             Err(_e) => self.write(b"error parsing gcode").await?,
         }
         Ok(())
     }
 
     async fn write(&mut self, buffer: &[u8]) -> Result<()> {
-        self.class.write_packet(buffer).await.map_err(to_error)
+        self.cdc_sender.write_packet(buffer).await.map_err(to_error)
     }
 }

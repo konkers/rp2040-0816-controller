@@ -7,14 +7,14 @@ use embassy_usb::class::cdc_acm::{self, CdcAcmClass};
 use embassy_usb::{Builder, Config};
 use embedded_io_async::Read;
 use heapless::{String, Vec};
-use pnpfeeder::GCodeLineSender;
+use pnpfeeder::GCodeEventSender;
 
 mod gcode_interface;
 mod picotool;
 
 pub struct Usb<'a, const GCODE_CHANNEL_LEN: usize, OutputReader: Read> {
     gcode_output_reader: OutputReader,
-    gcode_command_sender: GCodeLineSender<'a, GCODE_CHANNEL_LEN>,
+    gcode_event_sender: GCodeEventSender<'a, GCODE_CHANNEL_LEN>,
 }
 
 impl<'a, const GCODE_CHANNEL_LEN: usize, OutputReader: Read>
@@ -22,11 +22,11 @@ impl<'a, const GCODE_CHANNEL_LEN: usize, OutputReader: Read>
 {
     pub fn new(
         cdc_output_reader: OutputReader,
-        gcode_command_sender: GCodeLineSender<'a, GCODE_CHANNEL_LEN>,
+        gcode_event_sender: GCodeEventSender<'a, GCODE_CHANNEL_LEN>,
     ) -> Self {
         Self {
             gcode_output_reader: cdc_output_reader,
-            gcode_command_sender,
+            gcode_event_sender,
         }
     }
 
@@ -85,7 +85,7 @@ impl<'a, const GCODE_CHANNEL_LEN: usize, OutputReader: Read>
         let mut gcode = gcode_interface::GCodeInterface::new(
             cdc_acm_class,
             self.gcode_output_reader,
-            self.gcode_command_sender,
+            self.gcode_event_sender,
         );
 
         let usb_future = usb.run();
