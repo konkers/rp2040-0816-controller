@@ -142,10 +142,10 @@ impl<'a, W: Write, const N: usize> GCodeHandler<'a, W, N> {
             return true;
         }
 
-        let ret = if *command == word!('G', 0) {
-            self.handle_g0(line).await
-        } else if *command == word!('M', 600) {
+        let ret = if *command == word!('M', 600) {
             self.handle_m600(line).await
+        } else if *command == word!('M', 603) {
+            self.handle_m603(line).await
         } else if *command == word!('M', 610) {
             self.handle_m610(line).await
         } else if *command == word!('M', 620) {
@@ -185,25 +185,6 @@ impl<'a, W: Write, const N: usize> GCodeHandler<'a, W, N> {
         Ok((index, &mut self.feeders[index]))
     }
 
-    async fn handle_g0(&mut self, command: Line) -> Result<()> {
-        let mut index = None;
-        let mut angle = None;
-        for arg in command.arguments() {
-            match arg.letter {
-                'N' => index = Some(arg.value.cast()),
-                'A' => angle = Some(arg.value.cast()),
-                _ => return Err(Error::InvalidArgument(arg.letter)),
-            }
-        }
-
-        let (_, feeder) = self.resolve_feeder(index)?;
-        if let Some(angle) = angle {
-            feeder.set_servo_angle(angle).await?;
-        }
-
-        Ok(())
-    }
-
     async fn handle_m600(&mut self, command: Line) -> Result<()> {
         let mut index = None;
         let mut feed_length = None;
@@ -221,6 +202,25 @@ impl<'a, W: Write, const N: usize> GCodeHandler<'a, W, N> {
         let (_, feeder) = self.resolve_feeder(index)?;
 
         feeder.advance(feed_length, override_error).await?;
+
+        Ok(())
+    }
+
+    async fn handle_m603(&mut self, command: Line) -> Result<()> {
+        let mut index = None;
+        let mut angle = None;
+        for arg in command.arguments() {
+            match arg.letter {
+                'N' => index = Some(arg.value.cast()),
+                'A' => angle = Some(arg.value.cast()),
+                _ => return Err(Error::InvalidArgument(arg.letter)),
+            }
+        }
+
+        let (_, feeder) = self.resolve_feeder(index)?;
+        if let Some(angle) = angle {
+            feeder.set_servo_angle(angle).await?;
+        }
 
         Ok(())
     }
@@ -496,7 +496,7 @@ mod tests {
         let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
         let line_sender = gcode_channel.sender();
         let test_future = async move {
-            line_sender.send(line_event("G0 N1 A120.0")).await;
+            line_sender.send(line_event("M603 N1 A120.0")).await;
             line_sender.send(line_event("M999")).await;
         };
         let ((servos, output), _) = join(test_harness_future, test_future).await;
@@ -506,14 +506,14 @@ mod tests {
     }
 
     #[futures_test::test]
-    async fn g0_moves_correct_servo() {
+    async fn m603_moves_correct_servo() {
         let gcode_channel = GCodeEventChannel::<2>::new();
         let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
         let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender.send(line_event("M610 S1")).await;
-            line_sender.send(line_event("G0 N1 A120.0")).await;
+            line_sender.send(line_event("M603 N1 A120.0")).await;
             line_sender.send(line_event("M999")).await;
         };
         let ((servos, output), _) = join(test_harness_future, test_future).await;
@@ -596,10 +596,10 @@ mod tests {
         let test_future = async move {
             line_sender.send(GCodeEvent::Connect).await;
             line_sender.send(line_event("M610 S1")).await;
-            line_sender.send(line_event("G0 N1 A120.0")).await;
+            line_sender.send(line_event("M603 N1 A120.0")).await;
             line_sender.send(GCodeEvent::Disconnect).await;
             line_sender.send(GCodeEvent::Connect).await;
-            line_sender.send(line_event("G0 N1 A90.0")).await;
+            line_sender.send(line_event("M603 N1 A90.0")).await;
             line_sender.send(line_event("M999")).await;
         };
         let ((servos, output), _) = join(test_harness_future, test_future).await;
