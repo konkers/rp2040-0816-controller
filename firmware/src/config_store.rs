@@ -1,5 +1,6 @@
 use core::ops::Range;
 
+use defmt::{debug, error};
 use embedded_storage::nor_flash::NorFlash;
 use pnpfeeder::{ConfigStore, Error, FeederConfig, Value};
 use sequential_storage::map::{fetch_item, store_item, StorageItem};
@@ -94,12 +95,14 @@ impl<Flash: NorFlash> FlashConfigStore<Flash> {
             pwm_0: Value::from_num(490.2),
             pwm_180: Value::from_num(980.4),
             ignore_feeback_pin: false,
+            always_retract: true,
         }
     }
 }
 
 impl<Flash: NorFlash> ConfigStore for FlashConfigStore<Flash> {
     fn get(&mut self, index: usize) -> pnpfeeder::Result<FeederConfig> {
+        debug!("config get {}", index);
         let mut buf = [0u8; ConfigStorageItem::BUFFER_SIZE];
         let range = self.range.clone();
         // Too much extraneous error handling here.  We should be able to clean this up.
@@ -109,7 +112,31 @@ impl<Flash: NorFlash> ConfigStore for FlashConfigStore<Flash> {
             &mut buf,
             ConfigKey::FeederConfigV0(index),
         )
-        .map_err(|_| Error::ConfigGetError)?;
+        .unwrap_or_else(|e| {
+            // On any error, log it and return the default config.
+            match e {
+                sequential_storage::map::MapError::Item(_) => {
+                    error!("config get {} item error", index)
+                }
+                sequential_storage::map::MapError::Storage(_) => {
+                    error!("config get {} storage error", index)
+                }
+                sequential_storage::map::MapError::FullStorage => {
+                    error!("config get {} full storage error", index)
+                }
+                sequential_storage::map::MapError::Corrupted => {
+                    error!("config get {} corrupted error", index)
+                }
+                sequential_storage::map::MapError::BufferTooBig => {
+                    error!("config get {} buffer too big error", index)
+                }
+                sequential_storage::map::MapError::BufferTooSmall(_) => {
+                    error!("config get {} buffer too small error", index)
+                }
+                _ => error!("config get {} unknown error", index),
+            };
+            None
+        });
 
         match item
             .map(|item| item.value)
@@ -120,9 +147,33 @@ impl<Flash: NorFlash> ConfigStore for FlashConfigStore<Flash> {
     }
 
     fn set(&mut self, index: usize, config: &FeederConfig) -> pnpfeeder::Result<()> {
+        debug!("config set {}", index);
         let mut buf = [0u8; ConfigStorageItem::BUFFER_SIZE];
         let range = self.range.clone();
         let item = ConfigStorageItem::new_config(index, config.clone());
-        store_item(&mut self.flash, range, &mut buf, item).map_err(|_| Error::ConfigSetError)
+        store_item(&mut self.flash, range, &mut buf, item).map_err(|e| {
+            match e {
+                sequential_storage::map::MapError::Item(_) => {
+                    error!("config get {} item error", index)
+                }
+                sequential_storage::map::MapError::Storage(_) => {
+                    error!("config get {} storage error", index)
+                }
+                sequential_storage::map::MapError::FullStorage => {
+                    error!("config get {} full storage error", index)
+                }
+                sequential_storage::map::MapError::Corrupted => {
+                    error!("config get {} corrupted error", index)
+                }
+                sequential_storage::map::MapError::BufferTooBig => {
+                    error!("config get {} buffer too big error", index)
+                }
+                sequential_storage::map::MapError::BufferTooSmall(_) => {
+                    error!("config get {} buffer too small error", index)
+                }
+                _ => error!("config get {} unknown error", index),
+            };
+            Error::ConfigSetError
+        })
     }
 }

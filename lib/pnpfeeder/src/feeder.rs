@@ -21,6 +21,7 @@ pub struct FeederConfig {
     pub pwm_0: Value,
     pub pwm_180: Value,
     pub ignore_feeback_pin: bool,
+    pub always_retract: bool,
 }
 
 impl Default for FeederConfig {
@@ -34,6 +35,7 @@ impl Default for FeederConfig {
             pwm_0: Value::from_num(0),
             pwm_180: Value::from_num(0),
             ignore_feeback_pin: false,
+            always_retract: false,
         }
     }
 }
@@ -187,6 +189,7 @@ pub struct Feeder<S: Servo, I: Input> {
     config: FeederConfig,
     enabled: bool,
     feedback_recognizer: FeedbackInputRecognizer,
+    advance_offset: Value,
 }
 
 impl<S: Servo, I: Input> Feeder<S, I> {
@@ -204,6 +207,7 @@ impl<S: Servo, I: Input> Feeder<S, I> {
             config,
             enabled: false,
             feedback_recognizer: FeedbackInputRecognizer::new(),
+            advance_offset: Value::from_num(0),
         }
     }
 
@@ -279,16 +283,60 @@ impl<S: Servo, I: Input> Feeder<S, I> {
         Timer::after_micros(self.config.settle_time as u64 * 1000).await;
     }
 
-    async fn advance(&mut self, _length: Option<Value>, override_error: bool) -> Result<()> {
+    async fn advance(&mut self, length: Option<Value>, override_error: bool) -> Result<()> {
         let override_error = override_error || self.config.ignore_feeback_pin;
         if !override_error && self.feedback.get_state().await {
             return Err(Error::FeederNotReady);
         }
 
-        self.set_servo_angle(self.config.advanced_angle)?;
-        self.settle().await;
-        self.set_servo_angle(self.config.retract_angle)?;
-        self.settle().await;
+        let mut length = length.unwrap_or(self.config.feed_length);
+
+        // Ensure the the feed length is an even multiple of 2mm.
+        if length % Value::from_num(2) != 0 {
+            return Err(Error::InvalidFeedLength(length));
+        }
+
+        while length > Value::from_num(0) {
+            // The feeder can advance in maximum of 4mm increments (the distance between feed
+            // holes.  A feed longer than that needs to be broken up into a series of
+            // advance/retract cycles.
+            //
+            // Additionally, in order to support tap with 2mm part spacing, we have a
+            // `half_advanced_angle`.  Some feeders can't be retracted from the half advanced
+            // state so we need to track the a feed offset and only retract the servo when
+            // it reaches 4mm.  This means that sometimes we can only advance 2mm before a retract.
+
+            // Caclulate the maximum amount we can advance this cycle, taking into account the
+            // current offset.
+            let advance_length = core::cmp::min(Value::from_num(4) - self.advance_offset, length);
+
+            // Caclulate the absolute advance position that the advance length equates to, taking
+            // into account the current offset.
+            let advance_to = self.advance_offset + advance_length;
+
+            // Depending on the final advace position, advance to either the full or half angle.
+            if advance_to == Value::from_num(2) {
+                self.set_servo_angle(self.config.half_advanced_angle)?;
+            } else {
+                self.set_servo_angle(self.config.advanced_angle)?;
+            }
+
+            self.settle().await;
+
+            if self.config.always_retract || advance_to == Value::from_num(4) {
+                // If either the feeder should retract on every advance of we have reach a 4mm
+                // offset, retract the servro and reset the offset.
+                self.set_servo_angle(self.config.retract_angle)?;
+                self.settle().await;
+                self.advance_offset = Value::from_num(0);
+            } else {
+                // ... otherwise set the offset to our current advance state.
+                self.advance_offset = advance_to;
+            }
+
+            // Update the length remaining to advance by the amount advanced this cycle.
+            length -= advance_length;
+        }
 
         // Reset the feedback as a button recognizer since we just fed.
         self.feedback_recognizer.reset();

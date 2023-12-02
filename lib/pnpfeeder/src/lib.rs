@@ -26,7 +26,7 @@ pub type Value64 = FixedI64<U16>;
 
 pub struct Types;
 impl BufferTypes<Value> for Types {
-    type Words = Vec<Word, 10>;
+    type Words = Vec<Word, 16>;
 }
 
 pub type Word = fixed_gcode::Word<Value>;
@@ -49,6 +49,7 @@ pub enum Error {
     FeederNotReady,
     ConfigSetError,
     ConfigGetError,
+    InvalidFeedLength(Value),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -71,6 +72,7 @@ impl Display for Error {
             Self::FeederNotReady => write!(f, "feeder not ready"),
             Self::ConfigSetError => write!(f, "can't set config"),
             Self::ConfigGetError => write!(f, "can't get config"),
+            Self::InvalidFeedLength(len) => write!(f, "invald feed length {len}"),
         }
     }
 }
@@ -281,6 +283,7 @@ impl<'a, W: Write, C: ConfigStore, const N: usize> GCodeHandler<'a, W, C, N> {
         let mut pwm_0 = None;
         let mut pwm_180 = None;
         let mut ignore_feeback_pin = None;
+        let mut always_retract = None;
 
         for arg in command.arguments() {
             match arg.letter {
@@ -293,6 +296,7 @@ impl<'a, W: Write, C: ConfigStore, const N: usize> GCodeHandler<'a, W, C, N> {
                 'V' => pwm_0 = Some(arg.value.cast()),
                 'W' => pwm_180 = Some(arg.value.cast()),
                 'X' => ignore_feeback_pin = Some(arg.value != 0),
+                'Y' => always_retract = Some(arg.value != 0),
                 letter => return Err(Error::InvalidArgument(letter)),
             }
         }
@@ -316,6 +320,7 @@ impl<'a, W: Write, C: ConfigStore, const N: usize> GCodeHandler<'a, W, C, N> {
         handle_parameter!(pwm_0);
         handle_parameter!(pwm_180);
         handle_parameter!(ignore_feeback_pin);
+        handle_parameter!(always_retract);
 
         feeder.set_config(config.clone()).await?;
 
@@ -347,7 +352,7 @@ impl<'a, W: Write, C: ConfigStore, const N: usize> GCodeHandler<'a, W, C, N> {
         let mut s: String<64> = String::new();
         writeln!(
             s,
-            "M620 N{} A{} B{} C{} F{} U{} V{} W{} X{}",
+            "M620 N{} A{} B{} C{} F{} U{} V{} W{} X{} Y{}",
             index,
             config.advanced_angle,
             config.half_advanced_angle,
@@ -356,7 +361,8 @@ impl<'a, W: Write, C: ConfigStore, const N: usize> GCodeHandler<'a, W, C, N> {
             config.settle_time,
             config.pwm_0,
             config.pwm_180,
-            if config.ignore_feeback_pin { 1 } else { 0 }
+            if config.ignore_feeback_pin { 1 } else { 0 },
+            if config.always_retract { 1 } else { 0 },
         )
         .ok();
         let _ = self.output.write_all(s.as_bytes()).await;
@@ -491,10 +497,11 @@ mod tests {
                 half_advanced_angle: Value::from_num(107.5),
                 retract_angle: Value::from_num(80),
                 feed_length: Value::from_num(2.0),
-                settle_time: 300,
+                settle_time: 3,
                 pwm_0: Value::from_num(490.2),
                 pwm_180: Value::from_num(980.4),
                 ignore_feeback_pin: false,
+                always_retract: false,
             }
         }
     }
@@ -613,7 +620,7 @@ mod tests {
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender.send(line_event("M610 S1")).await;
-            line_sender.send(line_event("M600 N1")).await;
+            line_sender.send(line_event("M600 N1 F4")).await;
             line_sender.send(line_event("M999")).await;
         };
         let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
@@ -641,7 +648,7 @@ mod tests {
         let test_future = async move {
             line_sender.send(line_event("M610 S1")).await;
             line_sender.send(line_event("M620 N1 A122 C22")).await;
-            line_sender.send(line_event("M600 N1")).await;
+            line_sender.send(line_event("M600 N1 F4")).await;
             line_sender.send(line_event("M999")).await;
         };
         let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
@@ -660,7 +667,7 @@ mod tests {
         let test_future = async move {
             line_sender.send(line_event("M610 S1")).await;
             line_sender.send(line_event("M620 N1 A122 C22")).await;
-            line_sender.send(line_event("M600 N1")).await;
+            line_sender.send(line_event("M600 N1 F4")).await;
             line_sender.send(line_event("M999")).await;
         };
         let ((_servos, output, config), _) = join(test_harness_future, test_future).await;
@@ -684,7 +691,7 @@ mod tests {
         let line_sender = gcode_channel.sender();
         let test_future = async move {
             line_sender
-                .send(line_event("M620 N1 A1 B2 C3 F4 U5 V6 W7 X1"))
+                .send(line_event("M620 N1 A1 B2 C3 F4 U5 V6 W7 X1 Y0"))
                 .await;
             line_sender.send(line_event("M621 N1")).await;
             line_sender.send(line_event("M999")).await;
@@ -692,7 +699,7 @@ mod tests {
         let ((_servos, output, _config), _) = join(test_harness_future, test_future).await;
 
         let output = String::from_utf8_lossy(&output);
-        assert_eq!(output, "ok\nM620 N1 A1 B2 C3 F4 U5 V6 W7 X1\nok\n");
+        assert_eq!(output, "ok\nM620 N1 A1 B2 C3 F4 U5 V6 W7 X1 Y0\nok\n");
     }
 
     #[futures_test::test]
@@ -728,7 +735,7 @@ mod tests {
             line_sender.send(line_event("M999")).await;
         };
         let ((_servos, output, _config), _) = join(test_harness_future, test_future).await;
-        assert_eq!(String::from_utf8_lossy(&output), "saved settings:\nM620 N0 A135 B107.5 C80 F2 U300 V490.2 W980.4 X0\nM620 N1 A135 B107.5 C80 F2 U300 V490.2 W980.4 X0\nready\n");
+        assert_eq!(String::from_utf8_lossy(&output), "saved settings:\nM620 N0 A135 B107.5 C80 F2 U3 V490.2 W980.4 X0 Y0\nM620 N1 A135 B107.5 C80 F2 U3 V490.2 W980.4 X0 Y0\nready\n");
     }
 
     #[futures_test::test]
@@ -743,7 +750,7 @@ mod tests {
 
         let test_future = async move {
             line_sender.send(line_event("M610 S1")).await;
-            line_sender.send(line_event("M600 N0")).await;
+            line_sender.send(line_event("M600 N0 F4")).await;
             line_sender.send(line_event("M999")).await;
         };
         let ((_servos, output, _config), _) = join(test_harness_future, test_future).await;
@@ -764,7 +771,7 @@ mod tests {
 
         let test_future = async move {
             line_sender.send(line_event("M610 S1")).await;
-            line_sender.send(line_event("M600 N0 X1")).await;
+            line_sender.send(line_event("M600 N0 F4 X1")).await;
             line_sender.send(line_event("M999")).await;
         };
         let ((_servos, output, _config), _) = join(test_harness_future, test_future).await;
@@ -786,7 +793,7 @@ mod tests {
         let test_future = async move {
             line_sender.send(line_event("M610 S1")).await;
             line_sender.send(line_event("M620 N0 X1")).await;
-            line_sender.send(line_event("M600 N0")).await;
+            line_sender.send(line_event("M600 N0 F4")).await;
             line_sender.send(line_event("M999")).await;
         };
         let ((_servos, output, _config), _) = join(test_harness_future, test_future).await;
@@ -796,7 +803,7 @@ mod tests {
     }
 
     #[futures_test::test]
-    async fn feedback_pulse_advances_feeder() {
+    async fn feedback_pulse_half_advances_feeder() {
         let gcode_channel = GCodeEventChannel::<2>::new();
         let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
         let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
@@ -822,7 +829,106 @@ mod tests {
         let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
 
         println!("{}", String::from_utf8_lossy(&output));
-        assert_eq!(servos[0], vec![Value::from_num(122), Value::from_num(22)]);
+        assert_eq!(servos[0], vec![Value::from_num(107.5)]);
+        assert!(servos[1].is_empty());
+    }
+
+    #[futures_test::test]
+    async fn feeder_only_retracts_on_4mm_bondaries() {
+        let gcode_channel = GCodeEventChannel::<2>::new();
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
+        let line_sender = gcode_channel.sender();
+        let feedback0 = &fake_inputs[0];
+
+        // Start with switch unpressed.
+        feedback0.send(true).await;
+
+        let test_future = async move {
+            line_sender.send(line_event("M610 S1")).await;
+
+            // Set to known angles, ignore feedback pin, and disable `always_retract`.
+            line_sender
+                .send(line_event("M620 N0 A50 B25 C0 X1 Y0"))
+                .await;
+
+            // Feeding by 2mm advance to the half angle and not retract.
+            line_sender.send(line_event("M600 N0 F2")).await;
+            // Feeding by another 4mm should advance to the full angle, retract and advance
+            // to the half angle.
+            line_sender.send(line_event("M600 N0 F4")).await;
+            // Feeding by a final 2mm should advance to the full angle and retract.
+            line_sender.send(line_event("M600 N0 F2")).await;
+
+            line_sender.send(line_event("M999")).await;
+        };
+        let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
+
+        println!("{}", String::from_utf8_lossy(&output));
+        assert_eq!(
+            servos[0],
+            vec![
+                // F2 half advances.
+                Value::from_num(25),
+                // F4 full advances, retracts, and half advances.
+                Value::from_num(50),
+                Value::from_num(0),
+                Value::from_num(25),
+                // F2 full advances and retracts.
+                Value::from_num(50),
+                Value::from_num(0)
+            ]
+        );
+        assert!(servos[1].is_empty());
+    }
+
+    #[futures_test::test]
+    async fn always_retract_feeder_retracts_on_every_advance() {
+        let gcode_channel = GCodeEventChannel::<2>::new();
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
+        let line_sender = gcode_channel.sender();
+        let feedback0 = &fake_inputs[0];
+
+        // Start with switch unpressed.
+        feedback0.send(true).await;
+
+        let test_future = async move {
+            line_sender.send(line_event("M610 S1")).await;
+
+            // Set to known angles, ignore feedback pin, and enable `always_retract`.
+            line_sender
+                .send(line_event("M620 N0 A50 B25 C0 X1 Y1"))
+                .await;
+
+            // Feeding by 2mm advance to the half angle and retract.
+            line_sender.send(line_event("M600 N0 F2")).await;
+            // Feeding by 4mm advance to the full angle and retract.
+            line_sender.send(line_event("M600 N0 F4")).await;
+            // Feeding by 6mm advance to the full angle, retract, advance to the half anfle, and retract.
+            line_sender.send(line_event("M600 N0 F6")).await;
+
+            line_sender.send(line_event("M999")).await;
+        };
+        let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
+
+        println!("{}", String::from_utf8_lossy(&output));
+        assert_eq!(
+            servos[0],
+            vec![
+                // F2 half advances and retracts.
+                Value::from_num(25),
+                Value::from_num(0),
+                // F4 full advances and retracts.
+                Value::from_num(50),
+                Value::from_num(0),
+                // F3 full advances, retracts, half advances, and retracts.
+                Value::from_num(50),
+                Value::from_num(0),
+                Value::from_num(25),
+                Value::from_num(0),
+            ]
+        );
         assert!(servos[1].is_empty());
     }
 }
