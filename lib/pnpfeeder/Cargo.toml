@@ -19,17 +19,17 @@ embassy-time = { version = "0.1.5", path = "../../third_party/embassy-rs/embassy
 	"unstable-traits",
 ] }
 embedded-io-async = { version = "0.6.0", default-features = false }
-fixed = "1.24"
+fixed = { version = "1.24", features = ["serde"] }
 fixed_gcode = { version = "0.1.0", path = "../../third_party/fixed_gcode", default-features = false }
 futures = { version = "0.3.29", default-features = false }
 heapless = "0.8.0"
+serde = { version = "1.0", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 futures-executor = { version = "0.3.17", features = ["thread-pool"] }
 futures-test = "0.3.17"
 futures-timer = "3.0.2"
 futures-util = { version = "0.3.17", features = ["channel"] }
-ntest = "0.9.0"
 
 [features]
 default = ["std"]
