@@ -8,15 +8,19 @@
 use embassy_executor::Spawner;
 use embassy_futures::join::{join3, join4};
 use embassy_rp::bind_interrupts;
+use embassy_rp::flash::Async;
+use embassy_rp::flash::Flash;
 use embassy_rp::gpio::{self, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::InterruptHandler;
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, pipe::Pipe};
 use pnpfeeder::{Feeder, FeederChannel, FeederClient, GCodeEventChannel, GCodeHandler};
+use rp2040_0816::config_store;
 use rp2040_0816::{gpio_input::GpioInput, pwm_servo::PwmServo, usb};
-use rp2040_flash::flash;
 
 use {defmt_rtt as _, panic_probe as _};
+
+const FLASH_SIZE: usize = 2 * 1024 * 1024;
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -26,9 +30,11 @@ bind_interrupts!(struct Irqs {
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    let _jedec_id: u32 = unsafe { cortex_m::interrupt::free(|_cs| flash::flash_jedec_id(true)) };
+    let mut flash = Flash::<_, Async, FLASH_SIZE>::new(p.FLASH, p.DMA_CH0);
+
+    let _jedec_id = flash.blocking_jedec_id().unwrap();
     let mut unique_id = [0u8; 8];
-    unsafe { cortex_m::interrupt::free(|_cs| flash::flash_unique_id(&mut unique_id, true)) };
+    flash.blocking_unique_id(&mut unique_id).unwrap();
 
     let mut cdc_output_pipe = Pipe::<NoopRawMutex, 256>::new();
     let (gcode_output_reader, gcode_output_writer) = cdc_output_pipe.split();
@@ -69,6 +75,9 @@ async fn main(_spawner: Spawner) {
         feeder_3.run(channels[3]),
     );
 
+    // Hard coding flash range here is terrible.
+    let store = config_store::FlashConfigStore::new(flash, (2048 - 32) * 1024..(2048) * 1024);
+
     let mut gcode_handler = GCodeHandler::new(
         [
             FeederClient::new(channels[0]),
@@ -77,6 +86,7 @@ async fn main(_spawner: Spawner) {
             FeederClient::new(channels[3]),
         ],
         gcode_output_writer,
+        store,
     );
     let gcode_future = gcode_handler.run(gcode_event_channel.receiver());
 
