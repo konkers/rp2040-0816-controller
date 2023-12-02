@@ -47,6 +47,8 @@ pub enum Error {
     FixedPointError,
     InvalidFeederCommandResponse,
     FeederNotReady,
+    ConfigSetError,
+    ConfigGetError,
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -67,8 +69,16 @@ impl Display for Error {
             Self::FixedPointError => write!(f, "fixed point error"),
             Self::InvalidFeederCommandResponse => write!(f, "invalid feeder command respons"),
             Self::FeederNotReady => write!(f, "feeder not ready"),
+            Self::ConfigSetError => write!(f, "can't set config"),
+            Self::ConfigGetError => write!(f, "can't get config"),
         }
     }
+}
+
+pub trait ConfigStore {
+    // If no settings exist in the store, the default settings should be returned.
+    fn get(&mut self, index: usize) -> Result<FeederConfig>;
+    fn set(&mut self, index: usize, config: &FeederConfig) -> Result<()>;
 }
 
 pub enum GCodeEvent {
@@ -82,9 +92,10 @@ pub type GCodeEventReceiver<'a, const N: usize> =
     channel::Receiver<'a, NoopRawMutex, GCodeEvent, N>;
 pub type GCodeEventSender<'a, const N: usize> = channel::Sender<'a, NoopRawMutex, GCodeEvent, N>;
 
-pub struct GCodeHandler<'a, W: Write, const N: usize> {
+pub struct GCodeHandler<'a, W: Write, C: ConfigStore, const N: usize> {
     feeders: [FeederClient<'a>; N],
     output: W,
+    config_store: C,
 }
 
 macro_rules! word {
@@ -93,12 +104,17 @@ macro_rules! word {
     };
 }
 
-impl<'a, W: Write, const N: usize> GCodeHandler<'a, W, N> {
-    pub fn new(feeders: [FeederClient<'a>; N], output: W) -> Self {
-        Self { feeders, output }
+impl<'a, W: Write, C: ConfigStore, const N: usize> GCodeHandler<'a, W, C, N> {
+    pub fn new(feeders: [FeederClient<'a>; N], output: W, config_store: C) -> Self {
+        Self {
+            feeders,
+            output,
+            config_store,
+        }
     }
 
     pub async fn run(&mut self, receiver: GCodeEventReceiver<'_, 2>) {
+        self.initialize_feeder_configs().await;
         loop {
             let exit = match receiver.receive().await {
                 GCodeEvent::Connect => self.handle_connect().await,
@@ -107,6 +123,17 @@ impl<'a, W: Write, const N: usize> GCodeHandler<'a, W, N> {
             };
             if exit {
                 break;
+            }
+        }
+    }
+
+    pub async fn initialize_feeder_configs(&mut self) {
+        for index in 0..N {
+            // It's unclear what the right action is on failure.  Perhaps we
+            // should have a disabled state where and error will be printed
+            // on connection.
+            if let Ok(config) = self.config_store.get(index) {
+                let _ = self.feeders[index].set_config(config).await;
             }
         }
     }
@@ -270,7 +297,7 @@ impl<'a, W: Write, const N: usize> GCodeHandler<'a, W, N> {
             }
         }
 
-        let (_, feeder) = self.resolve_feeder(index)?;
+        let (index, feeder) = self.resolve_feeder(index)?;
         let mut config = feeder.get_config().await?;
 
         macro_rules! handle_parameter {
@@ -290,7 +317,11 @@ impl<'a, W: Write, const N: usize> GCodeHandler<'a, W, N> {
         handle_parameter!(pwm_180);
         handle_parameter!(ignore_feeback_pin);
 
-        feeder.set_config(config).await?;
+        feeder.set_config(config.clone()).await?;
+
+        // Accessing the config store has to happen after updating the feeder
+        // as the feeder reference is mutable borring &self.
+        self.config_store.set(index, &config)?;
 
         Ok(())
     }
@@ -339,7 +370,8 @@ mod tests {
     use alloc::sync::Arc;
     use embassy_futures::join::{join, join_array};
     use embassy_time::Timer;
-    use std::{string::String, sync::Mutex, vec::Vec};
+    use fixed::traits::ToFixed;
+    use std::{collections::HashMap, string::String, sync::Mutex, vec::Vec};
 
     use super::*;
 
@@ -438,19 +470,66 @@ mod tests {
         }
     }
 
-    async fn run_handler<W: Write>(
+    struct FakeConfigStore {
+        store: Arc<Mutex<HashMap<usize, FeederConfig>>>,
+    }
+
+    impl FakeConfigStore {
+        fn new() -> Self {
+            Self {
+                store: Arc::new(Mutex::new(HashMap::new())),
+            }
+        }
+
+        fn get_store(&self) -> Arc<Mutex<HashMap<usize, FeederConfig>>> {
+            self.store.clone()
+        }
+
+        fn default_config() -> FeederConfig {
+            FeederConfig {
+                advanced_angle: Value::from_num(135.0),
+                half_advanced_angle: Value::from_num(107.5),
+                retract_angle: Value::from_num(80),
+                feed_length: Value::from_num(2.0),
+                settle_time: 300,
+                pwm_0: Value::from_num(490.2),
+                pwm_180: Value::from_num(980.4),
+                ignore_feeback_pin: false,
+            }
+        }
+    }
+
+    impl ConfigStore for FakeConfigStore {
+        fn get(&mut self, index: usize) -> Result<FeederConfig> {
+            Ok(self
+                .store
+                .lock()
+                .unwrap()
+                .get(&index)
+                .cloned()
+                .unwrap_or(Self::default_config()))
+        }
+
+        fn set(&mut self, index: usize, config: &FeederConfig) -> Result<()> {
+            self.store.lock().unwrap().insert(index, config.clone());
+            Ok(())
+        }
+    }
+
+    async fn run_handler<W: Write, C: ConfigStore>(
         feeders: [FeederClient<'_>; 2],
         output: W,
+        config_store: C,
         line_reciever: GCodeEventReceiver<'_, 2>,
     ) {
-        let mut gcode_handler = GCodeHandler::new(feeders, output);
+        let mut gcode_handler = GCodeHandler::new(feeders, output, config_store);
         gcode_handler.run(line_reciever).await;
     }
 
     async fn run_test_harness(
         line_reciever: GCodeEventReceiver<'_, 2>,
         fake_inputs: &[FakeInputChannel; 2],
-    ) -> ([Vec<Value>; 2], Vec<u8>) {
+    ) -> ([Vec<Value>; 2], Vec<u8>, HashMap<usize, FeederConfig>) {
         let (positions_0, servo_0) = FakeServo::new();
         let (positions_1, servo_1) = FakeServo::new();
         let mut feeder_0 = Feeder::new(servo_0, FakeInput::new(false, &fake_inputs[0]));
@@ -458,6 +537,8 @@ mod tests {
         let channels = [&FeederChannel::new(), &FeederChannel::new()];
         let feeder_future = join_array([feeder_0.run(channels[0]), feeder_1.run(channels[1])]);
         let mut output = Vec::<u8>::new();
+        let config_store = FakeConfigStore::new();
+        let backing_store = config_store.get_store();
         join(
             feeder_future,
             run_handler(
@@ -466,13 +547,15 @@ mod tests {
                     FeederClient::new(channels[1]),
                 ],
                 &mut output,
+                config_store,
                 line_reciever,
             ),
         )
         .await;
         let positions_0 = positions_0.lock().unwrap().clone();
         let positions_1 = positions_1.lock().unwrap().clone();
-        ([positions_0, positions_1], output)
+        let configs = backing_store.lock().unwrap().clone();
+        ([positions_0, positions_1], output, configs)
     }
 
     fn line_event(s: &str) -> GCodeEvent {
@@ -499,7 +582,7 @@ mod tests {
             line_sender.send(line_event("M603 N1 A120.0")).await;
             line_sender.send(line_event("M999")).await;
         };
-        let ((servos, output), _) = join(test_harness_future, test_future).await;
+        let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
         assert_eq!("error: feeder disabled\n", String::from_utf8_lossy(&output));
         assert!(servos[0].is_empty());
         assert!(servos[1].is_empty());
@@ -516,7 +599,7 @@ mod tests {
             line_sender.send(line_event("M603 N1 A120.0")).await;
             line_sender.send(line_event("M999")).await;
         };
-        let ((servos, output), _) = join(test_harness_future, test_future).await;
+        let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
         println!("{}", String::from_utf8_lossy(&output));
         assert!(servos[0].is_empty());
         assert_eq!(servos[1], vec![Value::from_num(120.0)]);
@@ -533,7 +616,7 @@ mod tests {
             line_sender.send(line_event("M600 N1")).await;
             line_sender.send(line_event("M999")).await;
         };
-        let ((servos, output), _) = join(test_harness_future, test_future).await;
+        let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
 
         println!("{}", String::from_utf8_lossy(&output));
         assert!(servos[0].is_empty());
@@ -561,11 +644,36 @@ mod tests {
             line_sender.send(line_event("M600 N1")).await;
             line_sender.send(line_event("M999")).await;
         };
-        let ((servos, output), _) = join(test_harness_future, test_future).await;
+        let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
 
         println!("{}", String::from_utf8_lossy(&output));
         assert!(servos[0].is_empty());
         assert_eq!(servos[1], vec![Value::from_num(122), Value::from_num(22)]);
+    }
+
+    #[futures_test::test]
+    async fn m620_updates_feeder_config_in_store() {
+        let gcode_channel = GCodeEventChannel::<2>::new();
+        let fake_inputs = [FakeInputChannel::new(), FakeInputChannel::new()];
+        let test_harness_future = run_test_harness(gcode_channel.receiver(), &fake_inputs);
+        let line_sender = gcode_channel.sender();
+        let test_future = async move {
+            line_sender.send(line_event("M610 S1")).await;
+            line_sender.send(line_event("M620 N1 A122 C22")).await;
+            line_sender.send(line_event("M600 N1")).await;
+            line_sender.send(line_event("M999")).await;
+        };
+        let ((_servos, output, config), _) = join(test_harness_future, test_future).await;
+
+        println!("{}", String::from_utf8_lossy(&output));
+        assert_eq!(
+            *config.get(&1).unwrap(),
+            FeederConfig {
+                advanced_angle: 122.0f32.to_fixed(),
+                retract_angle: 22.0f32.to_fixed(),
+                ..FakeConfigStore::default_config()
+            }
+        );
     }
 
     #[futures_test::test]
@@ -581,7 +689,7 @@ mod tests {
             line_sender.send(line_event("M621 N1")).await;
             line_sender.send(line_event("M999")).await;
         };
-        let ((_servos, output), _) = join(test_harness_future, test_future).await;
+        let ((_servos, output, _config), _) = join(test_harness_future, test_future).await;
 
         let output = String::from_utf8_lossy(&output);
         assert_eq!(output, "ok\nM620 N1 A1 B2 C3 F4 U5 V6 W7 X1\nok\n");
@@ -602,7 +710,7 @@ mod tests {
             line_sender.send(line_event("M603 N1 A90.0")).await;
             line_sender.send(line_event("M999")).await;
         };
-        let ((servos, output), _) = join(test_harness_future, test_future).await;
+        let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
         println!("{}", String::from_utf8_lossy(&output));
         // Ensure that servo 1 didn't move to 90 after a disconnect.
         assert!(servos[0].is_empty());
@@ -619,7 +727,7 @@ mod tests {
             line_sender.send(GCodeEvent::Connect).await;
             line_sender.send(line_event("M999")).await;
         };
-        let ((_servos, output), _) = join(test_harness_future, test_future).await;
+        let ((_servos, output, _config), _) = join(test_harness_future, test_future).await;
         assert_eq!(String::from_utf8_lossy(&output), "saved settings:\nM620 N0 A135 B107.5 C80 F2 U300 V490.2 W980.4 X0\nM620 N1 A135 B107.5 C80 F2 U300 V490.2 W980.4 X0\nready\n");
     }
 
@@ -638,7 +746,7 @@ mod tests {
             line_sender.send(line_event("M600 N0")).await;
             line_sender.send(line_event("M999")).await;
         };
-        let ((_servos, output), _) = join(test_harness_future, test_future).await;
+        let ((_servos, output, _config), _) = join(test_harness_future, test_future).await;
 
         let output = String::from_utf8_lossy(&output);
         assert_eq!(output, "ok\nerror: feeder not ready\n");
@@ -659,7 +767,7 @@ mod tests {
             line_sender.send(line_event("M600 N0 X1")).await;
             line_sender.send(line_event("M999")).await;
         };
-        let ((_servos, output), _) = join(test_harness_future, test_future).await;
+        let ((_servos, output, _config), _) = join(test_harness_future, test_future).await;
 
         let output = String::from_utf8_lossy(&output);
         assert_eq!(output, "ok\nok\n");
@@ -681,7 +789,7 @@ mod tests {
             line_sender.send(line_event("M600 N0")).await;
             line_sender.send(line_event("M999")).await;
         };
-        let ((_servos, output), _) = join(test_harness_future, test_future).await;
+        let ((_servos, output, _config), _) = join(test_harness_future, test_future).await;
 
         let output = String::from_utf8_lossy(&output);
         assert_eq!(output, "ok\nok\nok\n");
@@ -711,7 +819,7 @@ mod tests {
 
             line_sender.send(line_event("M999")).await;
         };
-        let ((servos, output), _) = join(test_harness_future, test_future).await;
+        let ((servos, output, _config), _) = join(test_harness_future, test_future).await;
 
         println!("{}", String::from_utf8_lossy(&output));
         assert_eq!(servos[0], vec![Value::from_num(122), Value::from_num(22)]);

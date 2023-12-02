@@ -4,13 +4,14 @@ use embassy_sync::{
     channel::{self, Channel},
 };
 use embassy_time::{Duration, Instant, Timer};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     servo::{PwmLimits, Servo},
     Error, Input, Result, Value,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FeederConfig {
     pub advanced_angle: Value,
     pub half_advanced_angle: Value,

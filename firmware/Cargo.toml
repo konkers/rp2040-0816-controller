@@ -58,7 +58,10 @@ fixed_gcode = { version = "0.1.0", path = "../third_party/fixed_gcode", default-
 heapless = "0.8.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 pnpfeeder = { version = "0.1.0", path = "../lib/pnpfeeder", default-features = false }
-rp2040-flash = "0.4.0"
+postcard = { version = "1.0.8", features = ["use-defmt"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+sequential-storage = { version = "0.6.0" }
+embedded-storage = "0.3.0"
 
 
 [profile.release]
